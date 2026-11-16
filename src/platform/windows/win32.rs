@@ -10,7 +10,7 @@ use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, IDC_ARROW, KillTimer, LoadCursorW, PostMessageW, RegisterClassW, SW_HIDE,
@@ -22,6 +22,7 @@ pub(crate) const WM_APP_EVENT: u32 = 0x8000 + 1;
 /// Mensajes enviados por el sistema (no posteados) que el WndProc reenvía a la cola.
 pub(crate) const WM_APP_FOCUS: u32 = WM_APP_EVENT + 1;
 pub(crate) const WM_APP_RELAYOUT: u32 = WM_APP_EVENT + 2;
+pub(crate) const WM_APP_CAPTURE_LOST: u32 = WM_APP_EVENT + 3;
 /// `WM_MOUSELEAVE` vive en `Win32::UI::Controls`; evitamos una feature extra.
 pub(crate) const WM_MOUSELEAVE: u32 = 0x02A3;
 pub(crate) const TIMER_ID: usize = 1;
@@ -66,6 +67,23 @@ pub(crate) fn dpi_for_window(hwnd: HWND) -> Option<u32> {
     // SAFETY: `hwnd` es una ventana viva de este proceso.
     let dpi = unsafe { GetDpiForWindow(hwnd) };
     (dpi != 0).then_some(dpi)
+}
+
+/// Captura el ratón mientras hay un botón pulsado: así el `WM_LBUTTONUP` llega
+/// aunque el cursor salga del calendario y la vista no se queda "pegada".
+pub(crate) fn capture_mouse(hwnd: HWND) {
+    // SAFETY: `hwnd` es una ventana viva de este hilo.
+    unsafe {
+        SetCapture(hwnd);
+    }
+}
+
+/// Suelta la captura si la tiene este hilo; es idempotente.
+pub(crate) fn release_capture() {
+    // SAFETY: sin punteros; sólo libera la captura del hilo actual.
+    unsafe {
+        ReleaseCapture();
+    }
 }
 
 /// Pide a Windows un `WM_MOUSELEAVE` cuando el cursor deja la ventana.
@@ -139,14 +157,15 @@ pub(crate) fn create_window(
     hwnd
 }
 
-pub(crate) fn set_timer(hwnd: HWND, interval: Option<u32>) {
+pub(crate) fn set_timer(hwnd: HWND, interval: Option<u32>) -> bool {
+    // SAFETY: `hwnd` es una ventana viva de este hilo; el id es propio y no se
+    // usa para nada más. `KillTimer` sobre un timer inexistente es inocuo.
     unsafe {
         match interval {
-            Some(milliseconds) => {
-                SetTimer(hwnd, TIMER_ID, milliseconds, None);
-            }
+            Some(milliseconds) => SetTimer(hwnd, TIMER_ID, milliseconds, None) != 0,
             None => {
                 KillTimer(hwnd, TIMER_ID);
+                true
             }
         }
     }

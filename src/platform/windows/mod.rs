@@ -30,9 +30,10 @@ use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_HOME, VK_LEFT, VK_RIGHT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DispatchMessageW, GetMessageW, HTTRANSPARENT, MSG, PostMessageW,
-    PostQuitMessage, TranslateMessage, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_HOTKEY, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST,
-    WM_PAINT, WM_SETFOCUS, WM_TIMER,
+    PostQuitMessage, SPI_SETWORKAREA, TranslateMessage, WM_CAPTURECHANGED, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETFOCUS,
+    WM_SETTINGCHANGE, WM_TIMER,
 };
 
 use crate::command::Command;
@@ -42,6 +43,11 @@ use crate::ui;
 use geometry::WorkArea;
 use render::LayeredSurface;
 
+/// `TICK` es múltiplo de `FRAME`: en modo pulso se llama a `tick()` cada
+/// `TICK_FRAMES` cuadros y sólo se avanza el frame en los demás.
+const TICK_FRAMES: u8 = (TICK.as_millis() / FRAME.as_millis()) as u8;
+const _: () = assert!(TICK.as_millis() == FRAME.as_millis() * TICK_FRAMES as u128);
+
 struct Shell {
     state: Hidebar,
     area: WorkArea,
@@ -50,6 +56,7 @@ struct Shell {
     strip_visible: bool,
     calendar_visible: bool,
     timer: Option<u32>,
+    frame_count: u8,
     inputs: Receiver<Input>,
     fullscreen_rx: Receiver<bool>,
     fullscreen: bool,
@@ -89,6 +96,7 @@ impl Shell {
             strip_visible: false,
             calendar_visible: false,
             timer: None,
+            frame_count: 0,
             inputs,
             fullscreen_rx,
             fullscreen: false,
@@ -105,6 +113,9 @@ impl Shell {
                 self.strip_visible = false;
             }
             if self.calendar_visible {
+                win32::release_capture();
+                self.cursor = iced::mouse::Cursor::Unavailable;
+                self.calendar.reset_cache();
                 self.calendar.hide();
                 self.calendar_visible = false;
             }
@@ -140,6 +151,9 @@ impl Shell {
                 self.calendar_visible = true;
             }
         } else if self.calendar_visible {
+            win32::release_capture();
+            self.cursor = iced::mouse::Cursor::Unavailable;
+            self.calendar.reset_cache();
             self.calendar.hide();
             self.calendar_visible = false;
         }
@@ -159,13 +173,53 @@ impl Shell {
         };
 
         if interval != self.timer {
-            win32::set_timer(self.strip.window(), interval);
-            self.timer = interval;
+            if win32::set_timer(self.strip.window(), interval) {
+                self.timer = interval;
+            } else {
+                logging::error(format!(
+                    "hidebar: no se pudo ajustar el timer: {}",
+                    io::Error::last_os_error()
+                ));
+                self.timer = None;
+            }
+            self.frame_count = 0;
         }
     }
 
     fn on_timer(&mut self) {
-        self.state.tick(Instant::now());
+        let instant = Instant::now();
+        let pulsing = self.state.pulsing();
+
+        if pulsing {
+            // 20 fps: sólo el frame del pulso; la hora y los vencimientos se
+            // revisan cada 250 ms (`TICK_FRAMES` cuadros), no en cada cuadro.
+            self.frame_count = self.frame_count.wrapping_add(1);
+            if self.frame_count.is_multiple_of(TICK_FRAMES) {
+                self.state.tick(instant);
+            } else {
+                self.state.frame(instant);
+            }
+        } else {
+            self.state.tick(instant);
+            self.frame_count = 0;
+        }
+
+        // Con el pulso activo y sin cambios de visibilidad sólo se repinta la
+        // franja: el calendario abierto no se redibuja 20 veces por segundo.
+        if pulsing
+            && self.state.strip_wanted() == self.strip_visible
+            && self.state.calendar_wanted() == self.calendar_visible
+        {
+            if self.strip_visible {
+                self.strip.render(
+                    &self.state,
+                    ui::Surface::Strip,
+                    iced::mouse::Cursor::Unavailable,
+                );
+            }
+            return;
+        }
+
         self.sync();
     }
 
@@ -198,6 +252,12 @@ impl Shell {
     fn on_mouse(&mut self, message: u32, lparam: LPARAM) {
         if !self.calendar_visible {
             return;
+        }
+
+        if message == WM_LBUTTONDOWN {
+            win32::capture_mouse(self.calendar.window());
+        } else if message == WM_LBUTTONUP {
+            win32::release_capture();
         }
 
         win32::track_mouse_leave(self.calendar.window());
@@ -234,9 +294,51 @@ impl Shell {
 
     fn on_mouse_leave(&mut self) {
         self.cursor = iced::mouse::Cursor::Unavailable;
-        if self.calendar_visible {
+        if !self.calendar_visible {
+            return;
+        }
+
+        // CursorLeft actualiza el estado hover/pressed de la vista; dibujar con
+        // el cursor vacío no lo limpia por sí solo.
+        let messages = self.calendar.update(
+            &self.state,
+            iced::Event::Mouse(iced::mouse::Event::CursorLeft),
+            self.cursor,
+        );
+        for message in messages {
+            self.apply_ui(message);
+        }
+
+        if self.state.calendar_wanted() {
             self.calendar
                 .render(&self.state, ui::Surface::Calendar, self.cursor);
+        } else {
+            self.sync();
+        }
+    }
+
+    fn on_capture_lost(&mut self) {
+        if !self.calendar_visible {
+            return;
+        }
+
+        win32::release_capture();
+        let messages = self.calendar.update(
+            &self.state,
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                iced::mouse::Button::Left,
+            )),
+            self.cursor,
+        );
+        for message in messages {
+            self.apply_ui(message);
+        }
+
+        if self.state.calendar_wanted() {
+            self.calendar
+                .render(&self.state, ui::Surface::Calendar, self.cursor);
+        } else {
+            self.sync();
         }
     }
 
@@ -274,8 +376,8 @@ impl Shell {
     fn relayout(&mut self, dpi: Option<u32>) {
         self.area = geometry::primary();
 
-        // `GetDpiForSystem` es el DPI del arranque; tras un cambio de escala
-        // hay que usar el wParam de WM_DPICHANGED o el DPI de la ventana.
+        // `geometry::primary` sólo aporta un valor inicial: el DPI que manda es
+        // el de la ventana (arranque) o el wParam de WM_DPICHANGED (cambio).
         if let Some(dpi) = dpi.or_else(|| win32::dpi_for_window(self.strip.window())) {
             self.area.scale = dpi as f32 / 96.0;
         }
@@ -297,11 +399,23 @@ impl Shell {
         self.sync();
     }
 
-    fn run(&mut self) {
+    fn run(&mut self) -> ExitCode {
         // SAFETY: bucle de mensajes estándar del hilo UI; `message` es un out válido.
         let mut message: MSG = unsafe { zeroed() };
 
-        while unsafe { GetMessageW(&mut message, null_mut(), 0, 0) } > 0 {
+        loop {
+            match unsafe { GetMessageW(&mut message, null_mut(), 0, 0) } {
+                0 => return ExitCode::SUCCESS,
+                -1 => {
+                    logging::error(format!(
+                        "hidebar: GetMessageW falló: {}",
+                        io::Error::last_os_error()
+                    ));
+                    return ExitCode::FAILURE;
+                }
+                _ => {}
+            }
+
             match message.message {
                 WM_TIMER if message.hwnd == self.strip.window() => self.on_timer(),
                 win32::WM_APP_EVENT => self.on_events(),
@@ -314,6 +428,9 @@ impl Shell {
                 WM_KEYDOWN if message.hwnd == self.calendar.window() => {
                     self.on_key(message.wParam as u32);
                 }
+                // Un Alt+Tab o un UAC pueden quitar la captura sin mandar el
+                // botón liberado: se limpia el estado pulsado de la vista.
+                win32::WM_APP_CAPTURE_LOST => self.on_capture_lost(),
                 // WM_SETFOCUS/KILLFOCUS y WM_DPICHANGED/DISPLAYCHANGE se envían,
                 // no se postean: el WndProc los reenvía con estos mensajes.
                 win32::WM_APP_FOCUS => self.on_focus(message.wParam != 0),
@@ -331,7 +448,7 @@ impl Shell {
             }
 
             if self.quit {
-                break;
+                return ExitCode::SUCCESS;
             }
         }
     }
@@ -393,12 +510,14 @@ pub(crate) fn run_daemon() -> ExitCode {
     fullscreen::listen(fullscreen_tx, hwnd);
 
     let mut shell = Shell::new(area, strip_hwnd, calendar_hwnd, receiver, fullscreen_rx);
-    shell.sync();
-    shell.run();
+    // `GetDpiForSystem` no sigue los cambios de escala posteriores al inicio de
+    // sesión; el DPI real de la ventana se consulta ya creada.
+    shell.relayout(win32::dpi_for_window(strip_hwnd));
+    let code = shell.run();
 
     hotkeys::unregister(strip_hwnd, &shell.hotkeys);
 
-    ExitCode::SUCCESS
+    code
 }
 
 pub(crate) fn send(command: Command) -> io::Result<String> {
@@ -456,6 +575,8 @@ unsafe fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
+        // Defensivo: WS_EX_TRANSPARENT ya deja pasar el ratón; esto cubre el
+        // caso de que el sistema consulte el hit-test igualmente.
         WM_NCHITTEST if is_strip => HTTRANSPARENT as LRESULT,
         WM_SETFOCUS | WM_KILLFOCUS if !is_strip => {
             let focused = usize::from(message == WM_SETFOCUS);
@@ -466,18 +587,29 @@ unsafe fn window_proc(
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
         }
-        WM_DPICHANGED => {
+        WM_CAPTURECHANGED if !is_strip => {
+            // SAFETY: también se envía, no se postea; se reenvía para que la
+            // vista suelte el botón aunque no llegue WM_LBUTTONUP.
+            unsafe {
+                PostMessageW(hwnd, win32::WM_APP_CAPTURE_LOST, 0, 0);
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
+        }
+        WM_DPICHANGED if is_strip => {
             // SAFETY: el wParam lleva el DPI nuevo en la palabra baja; se
-            // reenvía para que `relayout` no dependa de GetDpiForSystem.
+            // reenvía para que `relayout` no dependa de GetDpiForSystem. Sólo
+            // la franja relaya: `relayout` ya mueve las dos ventanas.
             let dpi = wparam & 0xFFFF;
             unsafe {
                 PostMessageW(hwnd, win32::WM_APP_RELAYOUT, dpi, 0);
             }
             0
         }
-        WM_DISPLAYCHANGE => {
-            // SAFETY: se reenvía el aviso; `relayout` consulta el DPI de la
-            // ventana si el mensaje no trae uno.
+        WM_DISPLAYCHANGE | WM_SETTINGCHANGE
+            if is_strip && (message != WM_SETTINGCHANGE || wparam == SPI_SETWORKAREA as usize) =>
+        {
+            // SAFETY: se reenvía el aviso; `relayout` recalcula la geometría y
+            // consulta el DPI de la ventana.
             unsafe {
                 PostMessageW(hwnd, win32::WM_APP_RELAYOUT, 0, 0);
             }
@@ -500,5 +632,23 @@ unsafe fn window_proc(
         }
         // SAFETY: el sistema garantiza un HWND y parámetros válidos para el mensaje.
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lparam_words_keep_the_sign() {
+        // x = -5, y = 300, tal como los empaqueta Windows.
+        let lparam: LPARAM = 0xFFFB | (300 << 16);
+        assert_eq!(low_word(lparam), -5);
+        assert_eq!(high_word(lparam), 300);
+    }
+
+    #[test]
+    fn pulse_ticks_line_up_with_tick() {
+        assert_eq!(TICK, FRAME * u32::from(TICK_FRAMES));
     }
 }

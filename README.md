@@ -152,19 +152,21 @@ Global hotkeys (registered with `RegisterHotKey`):
 
 | Keys | Action |
 |---|---|
-| `Ctrl+Alt+Win+T` / `B` / `W` / `A` | show clock / status / workspaces / all |
-| `Ctrl+Alt+Win+1` / `2` / `3` / `4` | pin-unpin clock / status / workspaces / all |
+| `Ctrl+Alt+Win+T` / `B` / `A` | show clock / status / all |
+| `Ctrl+Alt+Win+1` | open or close the calendar |
+| `Ctrl+Alt+Win+2` / `3` | pin-unpin status / all |
 
 They deliberately avoid `Ctrl+Shift+T/W/B` (reopen tab, close window, bookmarks bar) and are not
-AltGr combinations, so they do not block typing. Stop the daemon with `hidebar quit`. Set
+AltGr combinations, so they do not block typing. There is no workspaces hotkey because Windows has
+no source for it (see notes). Stop the daemon with `hidebar quit`. Set
 `HIDEBAR_NO_HOTKEYS=1` to disable all hotkeys without recompiling, or edit
 `src/platform/windows/hotkeys.rs` and rebuild to change the defaults.
 
 Notes:
 
 - `workspaces` is Linux-only for now: Windows has no equivalent compositor IPC, so
-  `show workspaces` does nothing.
-- The calendar opens with `hidebar toggle clock` or `Ctrl+Shift+Alt+T` and closes when it loses
+  `show workspaces` does nothing and it has no hotkey.
+- The calendar opens with `hidebar toggle clock` or `Ctrl+Alt+Win+1` and closes when it loses
   focus (clicking another window), by design. When opened from a terminal, Windows may not give
   it keyboard focus (foreground-lock rules); click it or use the hotkey, which does focus it.
 - v1 draws on the primary monitor only.

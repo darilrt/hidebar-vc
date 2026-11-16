@@ -153,6 +153,11 @@ impl LayeredSurface {
         messages
     }
 
+    /// Olvida el estado de widgets (hover/pressed) al ocultar la superficie.
+    pub(crate) fn reset_cache(&mut self) {
+        self.cache = user_interface::Cache::default();
+    }
+
     pub(crate) fn show(&self, activate: bool) {
         // SAFETY: `hwnd` es una ventana layered viva; solo cambia visibilidad/foco.
         if activate {
