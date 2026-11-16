@@ -1,7 +1,7 @@
-//! Shell Windows: Win32 + `UpdateLayeredWindow` + `iced_tiny_skia`.
+//! Windows shell: Win32 + `UpdateLayeredWindow` + `iced_tiny_skia`.
 //!
-//! No usa wgpu, winit ni `iced::daemon`. El bucle de mensajes es el dueño del
-//! estado; el WndProc solo valida pintura y hit-testing.
+//! Uses neither wgpu, winit nor `iced::daemon`. The message loop owns the
+//! state; the WndProc only validates painting and hit-testing.
 
 mod audio;
 mod battery;
@@ -223,7 +223,7 @@ impl Shell {
             self.apply_ui(message);
         }
 
-        // Hover/click solo repinta el calendario; la franja no cambia.
+        // Hover/click only repaints the calendar; the strip does not change.
         if self.state.calendar_wanted() {
             self.calendar
                 .render(&self.state, ui::Surface::Calendar, self.cursor);
@@ -274,8 +274,8 @@ impl Shell {
     fn relayout(&mut self, dpi: Option<u32>) {
         self.area = geometry::primary();
 
-        // `GetDpiForSystem` es el DPI del arranque; tras un cambio de escala
-        // hay que usar el wParam de WM_DPICHANGED o el DPI de la ventana.
+        // `GetDpiForSystem` is the DPI at startup; after a scale change
+        // the WM_DPICHANGED wParam or the window's DPI must be used.
         if let Some(dpi) = dpi.or_else(|| win32::dpi_for_window(self.strip.window())) {
             self.area.scale = dpi as f32 / 96.0;
         }
@@ -298,7 +298,7 @@ impl Shell {
     }
 
     fn run(&mut self) {
-        // SAFETY: bucle de mensajes estándar del hilo UI; `message` es un out válido.
+        // SAFETY: standard message loop of the UI thread; `message` is a valid out.
         let mut message: MSG = unsafe { zeroed() };
 
         while unsafe { GetMessageW(&mut message, null_mut(), 0, 0) } > 0 {
@@ -314,8 +314,8 @@ impl Shell {
                 WM_KEYDOWN if message.hwnd == self.calendar.window() => {
                     self.on_key(message.wParam as u32);
                 }
-                // WM_SETFOCUS/KILLFOCUS y WM_DPICHANGED/DISPLAYCHANGE se envían,
-                // no se postean: el WndProc los reenvía con estos mensajes.
+                // WM_SETFOCUS/KILLFOCUS and WM_DPICHANGED/DISPLAYCHANGE are sent,
+                // not posted: the WndProc forwards them as these messages.
                 win32::WM_APP_FOCUS => self.on_focus(message.wParam != 0),
                 win32::WM_APP_RELAYOUT => {
                     self.relayout((message.wParam != 0).then_some(message.wParam as u32));
@@ -323,7 +323,7 @@ impl Shell {
                 win32::WM_MOUSELEAVE if message.hwnd == self.calendar.window() => {
                     self.on_mouse_leave();
                 }
-                // SAFETY: reenvío estándar de los mensajes que no gestiona el shell.
+                // SAFETY: standard dispatch of messages the shell does not handle.
                 _ => unsafe {
                     TranslateMessage(&message);
                     DispatchMessageW(&message);
@@ -349,7 +349,7 @@ pub(crate) fn run_daemon() -> ExitCode {
         || !win32::register_class(&calendar_class, Some(calendar_proc))
     {
         logging::error(format!(
-            "hidebar: no se pudo registrar la clase de ventana: {}",
+            "hidebar: could not register the window class: {}",
             io::Error::last_os_error()
         ));
         return ExitCode::FAILURE;
@@ -405,7 +405,7 @@ pub(crate) fn send(command: Command) -> io::Result<String> {
     ipc::send(command)
 }
 
-/// Emisor común de las fuentes: encola el evento y despierta el bucle de mensajes.
+/// Shared source emitter: queues the event and wakes the message loop.
 fn emitter(
     sender: mpsc::Sender<Input>,
     hwnd: win32::SendHwnd,
@@ -446,8 +446,8 @@ unsafe extern "system" fn calendar_proc(
     unsafe { window_proc(false, hwnd, message, wparam, lparam) }
 }
 
-/// WndProc de ambas ventanas. No toca el `Shell`: el bucle principal gestiona
-/// timers, entrada, IPC y hotkeys fuera de la reentrada del sistema.
+/// WndProc of both windows. It does not touch the `Shell`: the main loop handles
+/// timers, input, IPC and hotkeys outside of system reentrancy.
 unsafe fn window_proc(
     is_strip: bool,
     hwnd: HWND,
@@ -459,16 +459,16 @@ unsafe fn window_proc(
         WM_NCHITTEST if is_strip => HTTRANSPARENT as LRESULT,
         WM_SETFOCUS | WM_KILLFOCUS if !is_strip => {
             let focused = usize::from(message == WM_SETFOCUS);
-            // SAFETY: se reenvía el foco a la cola del hilo UI; el Shell lo
-            // consume en su bucle. DefWindowProc mantiene el comportamiento base.
+            // SAFETY: focus is forwarded to the UI thread's queue; the Shell
+            // consumes it in its loop. DefWindowProc keeps the default behavior.
             unsafe {
                 PostMessageW(hwnd, win32::WM_APP_FOCUS, focused, 0);
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
         }
         WM_DPICHANGED => {
-            // SAFETY: el wParam lleva el DPI nuevo en la palabra baja; se
-            // reenvía para que `relayout` no dependa de GetDpiForSystem.
+            // SAFETY: the wParam carries the new DPI in the low word; it is
+            // forwarded so `relayout` does not depend on GetDpiForSystem.
             let dpi = wparam & 0xFFFF;
             unsafe {
                 PostMessageW(hwnd, win32::WM_APP_RELAYOUT, dpi, 0);
@@ -476,8 +476,8 @@ unsafe fn window_proc(
             0
         }
         WM_DISPLAYCHANGE => {
-            // SAFETY: se reenvía el aviso; `relayout` consulta el DPI de la
-            // ventana si el mensaje no trae uno.
+            // SAFETY: the notification is forwarded; `relayout` queries the window's
+            // DPI if the message carries none.
             unsafe {
                 PostMessageW(hwnd, win32::WM_APP_RELAYOUT, 0, 0);
             }
@@ -485,7 +485,7 @@ unsafe fn window_proc(
         }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
-            // SAFETY: BeginPaint/EndPaint emparejados sobre un HWND válido.
+            // SAFETY: paired BeginPaint/EndPaint on a valid HWND.
             let mut paint: PAINTSTRUCT = unsafe { zeroed() };
             unsafe {
                 BeginPaint(hwnd, &mut paint);
@@ -494,11 +494,11 @@ unsafe fn window_proc(
             0
         }
         WM_DESTROY => {
-            // SAFETY: cierra el bucle de mensajes de este hilo.
+            // SAFETY: ends this thread's message loop.
             unsafe { PostQuitMessage(0) };
             0
         }
-        // SAFETY: el sistema garantiza un HWND y parámetros válidos para el mensaje.
+        // SAFETY: the system guarantees a valid HWND and parameters for the message.
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
 }

@@ -1,8 +1,8 @@
-//! Audio: mute y volumen de la salida por defecto con Core Audio.
+//! Audio: mute and volume of the default output with Core Audio.
 //!
-//! Se re-enumera el endpoint cada 2 s: así se detectan cambios de dispositivo
-//! (auriculares, HDMI) sin implementar `IMMNotificationClient`. Los cambios de
-//! silencio se reflejan en como máximo ese intervalo.
+//! The endpoint is re-enumerated every 2 s: that detects device changes
+//! (headphones, HDMI) without implementing `IMMNotificationClient`. Mute
+//! changes show up within that interval at most.
 
 use std::time::{Duration, Instant};
 
@@ -15,12 +15,12 @@ use windows::Win32::System::Com::{
 use crate::event::{Audio, Event};
 
 const POLL: Duration = Duration::from_secs(2);
-/// Re-enumerar el endpoint detecta cambios de dispositivo; no hace falta cada poll.
+/// Re-enumerating the endpoint detects device changes; it is not needed on every poll.
 const REFRESH: Duration = Duration::from_secs(10);
 
 pub(crate) fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
     std::thread::spawn(move || {
-        // SAFETY: una inicialización COM por hilo; `ComGuard` equilibra el conteo.
+        // SAFETY: one COM initialization per thread; `ComGuard` balances the count.
         let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         if initialized.is_err() {
             return;
@@ -59,7 +59,7 @@ struct ComGuard;
 
 impl Drop for ComGuard {
     fn drop(&mut self) {
-        // SAFETY: equilibra el `CoInitializeEx` de este mismo hilo.
+        // SAFETY: balances the `CoInitializeEx` of this same thread.
         unsafe {
             CoUninitialize();
         }
@@ -67,8 +67,8 @@ impl Drop for ComGuard {
 }
 
 fn open() -> Option<IAudioEndpointVolume> {
-    // SAFETY: COM está inicializado en este hilo; las interfaces se usan solo
-    // aquí y se liberan al salir de la función.
+    // SAFETY: COM is initialized on this thread; the interfaces are only used
+    // here and released when the function returns.
     unsafe {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
@@ -80,7 +80,7 @@ fn open() -> Option<IAudioEndpointVolume> {
 }
 
 fn read(volume: &IAudioEndpointVolume) -> Option<Audio> {
-    // SAFETY: la interfaz pertenece a este hilo MTA y sigue viva durante la llamada.
+    // SAFETY: the interface belongs to this MTA thread and stays alive during the call.
     unsafe {
         Some(Audio {
             muted: volume.GetMute().ok()?.as_bool(),

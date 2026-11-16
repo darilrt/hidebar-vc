@@ -1,5 +1,5 @@
-//! Fuente de red: ruta por defecto (`/proc/net/route`) y, si la hay, una prueba de salida
-//! por TCP a `1.1.1.1:443` (sin enviar datos). Decisión en ADR-0002, Q1.
+//! Network source: default route (`/proc/net/route`) and, if there is one, a reachability probe
+//! over TCP to `1.1.1.1:443` (no data sent). Decided in ADR-0002, Q1.
 
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
@@ -15,8 +15,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const ROUTE_POLL: Duration = Duration::from_secs(5);
 const PROBE_EVERY: Duration = Duration::from_secs(30);
 
-/// Vigila la red en un hilo propio. Emite el estado inicial y luego sólo los cambios.
-/// `emit` devuelve `false` cuando el receptor ya no existe.
+/// Watches the network on its own thread. Emits the initial state and then only changes.
+/// `emit` returns `false` once the receiver is gone.
 pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
     std::thread::spawn(move || {
         let mut last: Option<Network> = None;
@@ -26,7 +26,7 @@ pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
             let has_route = fs::read_to_string("/proc/net/route")
                 .is_ok_and(|routes| has_default_route(&routes));
             let network = if has_route {
-                // Se prueba al aparecer la ruta y luego cada PROBE_EVERY.
+                // Probe when the route appears and then every PROBE_EVERY.
                 let due =
                     !had_route || last_probe.is_none_or(|(at, _)| at.elapsed() >= PROBE_EVERY);
                 if due {
@@ -56,7 +56,7 @@ fn probe() -> bool {
     TcpStream::connect_timeout(&PROBE_TARGET, PROBE_TIMEOUT).is_ok()
 }
 
-/// Hay una ruta con destino 0.0.0.0 y la bandera RTF_UP (0x1).
+/// There is a route with destination 0.0.0.0 and the RTF_UP flag (0x1).
 fn has_default_route(routes: &str) -> bool {
     routes.lines().skip(1).any(|line| {
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -92,11 +92,11 @@ mod tests {
         assert!(!has_default_route(HEADER));
     }
 
-    /// `cargo test -- --ignored`: lee la tabla de rutas real y hace una prueba TCP.
+    /// `cargo test -- --ignored`: reads the real routing table and runs a TCP probe.
     #[test]
-    #[ignore = "usa la red del equipo"]
+    #[ignore = "uses the machine's network"]
     fn checks_real_network() {
         let route = has_default_route(&fs::read_to_string("/proc/net/route").unwrap());
-        println!("ruta por defecto: {route}, salida: {}", route && probe());
+        println!("default route: {route}, internet: {}", route && probe());
     }
 }

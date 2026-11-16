@@ -1,7 +1,7 @@
-//! Vistas compartidas: dibujo de la franja y del calendario con widgets de iced.
+//! Shared views: drawing of the strip and the calendar with iced widgets.
 //!
-//! El shell decide qué superficie dibujar; aquí no hay tipos de Wayland, Win32 ni
-//! ventanas. La misma vista se usa con wgpu (Linux) y tiny-skia (Windows).
+//! The shell decides which surface to draw; there are no Wayland, Win32 or
+//! window types here. The same view is used with wgpu (Linux) and tiny-skia (Windows).
 
 mod view;
 
@@ -9,7 +9,7 @@ use iced::Element;
 
 use crate::state::Hidebar;
 
-/// Mensajes que produce la interacción con la vista (calendario).
+/// Messages produced by interacting with the view (calendar).
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     Month(i32),
@@ -17,7 +17,7 @@ pub(crate) enum Message {
     Close,
 }
 
-/// Superficie que se está dibujando.
+/// Surface being drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Surface {
     Strip,

@@ -1,4 +1,4 @@
-//! Helpers Win32 del shell. Todo unsafe está confinado aquí o en `render`.
+//! Win32 helpers for the shell. All unsafe code is confined here or in `render`.
 
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
@@ -19,20 +19,20 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 pub(crate) const WM_APP_EVENT: u32 = 0x8000 + 1;
-/// Mensajes enviados por el sistema (no posteados) que el WndProc reenvía a la cola.
+/// Messages sent by the system (not posted) that the WndProc forwards to the queue.
 pub(crate) const WM_APP_FOCUS: u32 = WM_APP_EVENT + 1;
 pub(crate) const WM_APP_RELAYOUT: u32 = WM_APP_EVENT + 2;
-/// `WM_MOUSELEAVE` vive en `Win32::UI::Controls`; evitamos una feature extra.
+/// `WM_MOUSELEAVE` lives in `Win32::UI::Controls`; this avoids an extra feature.
 pub(crate) const WM_MOUSELEAVE: u32 = 0x02A3;
 pub(crate) const TIMER_ID: usize = 1;
 
-/// Handle de ventana que puede enviarse a los hilos de fuentes/IPC.
-/// `PostMessageW` es seguro desde cualquier hilo mientras la ventana exista.
+/// Window handle that can be sent to the source/IPC threads.
+/// `PostMessageW` is safe from any thread while the window exists.
 #[derive(Clone, Copy)]
 pub(crate) struct SendHwnd(pub HWND);
 
-// SAFETY: el handle solo se usa para `PostMessageW`; la ventana vive hasta que
-// termina el proceso.
+// SAFETY: the handle is only used for `PostMessageW`; the window lives until
+// the process exits.
 unsafe impl Send for SendHwnd {}
 unsafe impl Sync for SendHwnd {}
 
@@ -45,30 +45,30 @@ pub(crate) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Declara Per-Monitor V2 antes de consultar DPI o crear ventanas. Sin esto
-/// Windows trata el proceso como DPI-unaware: `GetDpiForSystem` devuelve 96 y
-/// DWM estira las ventanas, con textos borrosos a 125–150 %.
+/// Declares Per-Monitor V2 before querying DPI or creating windows. Without it
+/// Windows treats the process as DPI-unaware: `GetDpiForSystem` returns 96 and
+/// DWM stretches the windows, with blurry text at 125–150 %.
 pub(crate) fn enable_dpi_awareness() {
-    // SAFETY: se llama una sola vez al principio del proceso, antes de crear
-    // ventanas o consultar DPI.
+    // SAFETY: called only once at process start, before creating
+    // windows or querying DPI.
     let ok = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     if ok == 0 {
-        // SAFETY: fallback de la misma inicialización de DPI; no crea recursos
-        // y se ejecuta antes de cualquier ventana o consulta de DPI.
+        // SAFETY: fallback for the same DPI initialization; creates no resources
+        // and runs before any window or DPI query.
         unsafe {
             SetProcessDPIAware();
         }
     }
 }
 
-/// DPI efectivo de una ventana viva; `None` si Windows no lo puede determinar.
+/// Effective DPI of a live window; `None` if Windows cannot determine it.
 pub(crate) fn dpi_for_window(hwnd: HWND) -> Option<u32> {
-    // SAFETY: `hwnd` es una ventana viva de este proceso.
+    // SAFETY: `hwnd` is a live window of this process.
     let dpi = unsafe { GetDpiForWindow(hwnd) };
     (dpi != 0).then_some(dpi)
 }
 
-/// Pide a Windows un `WM_MOUSELEAVE` cuando el cursor deja la ventana.
+/// Asks Windows for a `WM_MOUSELEAVE` when the cursor leaves the window.
 pub(crate) fn track_mouse_leave(hwnd: HWND) {
     let mut event = TRACKMOUSEEVENT {
         cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -77,7 +77,7 @@ pub(crate) fn track_mouse_leave(hwnd: HWND) {
         dwHoverTime: 0,
     };
 
-    // SAFETY: `hwnd` es una ventana viva de este hilo; el struct es válido.
+    // SAFETY: `hwnd` is a live window of this thread; the struct is valid.
     unsafe {
         TrackMouseEvent(&mut event);
     }
@@ -131,7 +131,7 @@ pub(crate) fn create_window(
     };
     assert!(!hwnd.is_null(), "CreateWindowExW");
 
-    // CreateWindowExW no dejó el título en el PoC; fijarlo explícitamente.
+    // CreateWindowExW did not keep the title in the PoC; set it explicitly.
     unsafe {
         SetWindowTextW(hwnd, title.as_ptr());
     }
@@ -158,9 +158,9 @@ pub(crate) fn post_event(hwnd: SendHwnd) {
     }
 }
 
-/// Si el proceso posee su propia consola (autoarranque, acceso directo),
-/// ocultarla. Lanzado desde una terminal, `GetConsoleProcessList` incluye al
-/// shell y no se toca. `HIDEBAR_FOREGROUND=1` la mantiene para depurar.
+/// If the process owns its console (autostart, shortcut),
+/// hide it. When launched from a terminal, `GetConsoleProcessList` includes the
+/// shell and it is left alone. `HIDEBAR_FOREGROUND=1` keeps it for debugging.
 pub(crate) fn hide_console_if_own() {
     if std::env::var_os("HIDEBAR_FOREGROUND").is_some() {
         return;

@@ -1,4 +1,4 @@
-//! Fuente de eventos de Hyprland: consulta `.socket.sock` y escucha `.socket2.sock`.
+//! Hyprland event source: queries `.socket.sock` and listens on `.socket2.sock`.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::event::{Event, Workspaces};
 
-/// Eventos de `.socket2.sock` que pueden cambiar los workspaces o el activo.
+/// `.socket2.sock` events that may change the workspaces or the active one.
 const RELEVANT: [&str; 5] = [
     "workspacev2",
     "focusedmonv2",
@@ -24,11 +24,11 @@ struct Workspace {
     id: i32,
 }
 
-/// Escucha Hyprland en un hilo propio y emite el estado de los workspaces: uno inicial y otro tras cada
-/// evento relevante. `emit` devuelve `false` cuando el receptor ya no existe. Sin Hyprland no hace nada.
+/// Listens to Hyprland on its own thread and emits the workspace state: an initial one and another after each
+/// relevant event. `emit` returns `false` once the receiver is gone. Does nothing without Hyprland.
 pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
     let Some(dir) = socket_dir() else {
-        eprintln!("hidebar: HYPRLAND_INSTANCE_SIGNATURE no definido; sin eventos de Hyprland");
+        eprintln!("hidebar: HYPRLAND_INSTANCE_SIGNATURE is not set; no Hyprland events");
         return;
     };
     std::thread::spawn(move || {
@@ -36,7 +36,7 @@ pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
             match run(&dir, &emit) {
                 Ok(Stop::ReceiverGone) => return,
                 Ok(Stop::Disconnected) => {}
-                Err(error) => eprintln!("hidebar: conexión con Hyprland: {error}"),
+                Err(error) => eprintln!("hidebar: Hyprland connection: {error}"),
             }
             std::thread::sleep(RETRY);
         }
@@ -86,7 +86,7 @@ fn request(dir: &Path, command: &str) -> io::Result<String> {
     Ok(reply)
 }
 
-/// Reduce las respuestas JSON de Hyprland a lo que importa. Descarta workspaces especiales (id < 1).
+/// Reduces Hyprland's JSON replies to what matters. Drops special workspaces (id < 1).
 fn parse_workspaces(all: &str, active: &str) -> serde_json::Result<Workspaces> {
     let mut ids: Vec<i32> = serde_json::from_str::<Vec<Workspace>>(all)?
         .into_iter()
@@ -121,9 +121,9 @@ mod tests {
         assert!(parse_workspaces("ok", "{}").is_err());
     }
 
-    /// `cargo test -- --ignored`: consulta la sesión real de Hyprland (sólo lectura).
+    /// `cargo test -- --ignored`: queries the real Hyprland session (read-only).
     #[test]
-    #[ignore = "requiere una sesión de Hyprland"]
+    #[ignore = "requires a Hyprland session"]
     fn queries_live_hyprland() {
         let dir = socket_dir().expect("HYPRLAND_INSTANCE_SIGNATURE");
         let workspaces = workspaces(&dir).unwrap();
@@ -138,6 +138,6 @@ mod tests {
         assert!(is_relevant("focusedmonv2>>eDP-1,1"));
         assert!(!is_relevant("workspace>>2"));
         assert!(!is_relevant("activewindowv2>>55fd"));
-        assert!(!is_relevant("sin separador"));
+        assert!(!is_relevant("no separator"));
     }
 }

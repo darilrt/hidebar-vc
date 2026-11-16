@@ -1,4 +1,4 @@
-//! Presentación layered: vista iced → tiny-skia → DIB BGRA → UpdateLayeredWindow.
+//! Layered presentation: iced view → tiny-skia → BGRA DIB → UpdateLayeredWindow.
 
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
@@ -26,7 +26,7 @@ use super::logging;
 use crate::state::Hidebar;
 use crate::ui;
 
-/// Una ventana layered con su DIB, renderer y cache de iced.
+/// A layered window with its DIB, renderer and iced cache.
 pub(crate) struct LayeredSurface {
     hwnd: HWND,
     position: POINT,
@@ -104,12 +104,12 @@ impl LayeredSurface {
         );
 
         let source = self.pixmap.data();
-        // SAFETY: `pixels` apunta al DIB de width*height u32 creado en
-        // `create_dib` con estas mismas dimensiones; vive hasta `Drop`.
+        // SAFETY: `pixels` points to the width*height u32 DIB created in
+        // `create_dib` with these same dimensions; it lives until `Drop`.
         let destination =
             unsafe { slice::from_raw_parts_mut(self.pixels, (self.width * self.height) as usize) };
 
-        // tiny-skia: RGBA premultiplicado. DIB 32 bpp: BGRA premultiplicado.
+        // tiny-skia: premultiplied RGBA. 32 bpp DIB: premultiplied BGRA.
         for (pixel, output) in source.as_chunks::<4>().0.iter().zip(destination.iter_mut()) {
             *output = (u32::from(pixel[3]) << 24)
                 | (u32::from(pixel[0]) << 16)
@@ -120,7 +120,7 @@ impl LayeredSurface {
         self.present();
     }
 
-    /// Aplica un evento al calendario y devuelve los mensajes de la vista.
+    /// Applies an event to the calendar and returns the view's messages.
     pub(crate) fn update(
         &mut self,
         state: &Hidebar,
@@ -154,7 +154,7 @@ impl LayeredSurface {
     }
 
     pub(crate) fn show(&self, activate: bool) {
-        // SAFETY: `hwnd` es una ventana layered viva; solo cambia visibilidad/foco.
+        // SAFETY: `hwnd` is a live layered window; only visibility/focus change.
         if activate {
             unsafe {
                 ShowWindow(self.hwnd, SW_SHOW);
@@ -190,8 +190,8 @@ impl LayeredSurface {
             return;
         }
 
-        // SAFETY: se restaura el bitmap original antes de borrar el DIB y el DC;
-        // ambos handles pertenecen a esta superficie y no se usan después.
+        // SAFETY: the original bitmap is restored before deleting the DIB and the DC;
+        // both handles belong to this surface and are not used afterwards.
         unsafe {
             SelectObject(self.mem_dc, self.old_bitmap);
             DeleteObject(self.dib);
@@ -236,8 +236,8 @@ impl LayeredSurface {
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
 
-        // SAFETY: `hwnd` es layered y está viva; `size` coincide con el DIB
-        // seleccionado en `mem_dc`; `position`, `source_point` y `blend` son locales.
+        // SAFETY: `hwnd` is layered and alive; `size` matches the DIB
+        // selected into `mem_dc`; `position`, `source_point` and `blend` are locals.
         let updated = unsafe {
             UpdateLayeredWindow(
                 self.hwnd,
@@ -254,7 +254,7 @@ impl LayeredSurface {
 
         if updated == 0 {
             logging::error(format!(
-                "hidebar: UpdateLayeredWindow falló: {}",
+                "hidebar: UpdateLayeredWindow failed: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -263,7 +263,7 @@ impl LayeredSurface {
 
 impl Drop for LayeredSurface {
     fn drop(&mut self) {
-        // SAFETY: handles creados en `create_dib` y no liberados antes.
+        // SAFETY: handles created in `create_dib` and not released before.
         unsafe {
             SelectObject(self.mem_dc, self.old_bitmap);
             DeleteObject(self.dib);
@@ -273,8 +273,8 @@ impl Drop for LayeredSurface {
 }
 
 fn create_dib(width: u32, height: u32) -> (HDC, HBITMAP, HGDIOBJ, *mut u32) {
-    // SAFETY: DC compatible con pantalla; el DIB se selecciona en él y ambos
-    // se liberan en `Drop`. `bits` apunta a width*height píxeles de 32 bpp.
+    // SAFETY: screen-compatible DC; the DIB is selected into it and both
+    // are released in `Drop`. `bits` points to width*height 32 bpp pixels.
     let mem_dc = unsafe { CreateCompatibleDC(null_mut()) };
     assert!(!mem_dc.is_null(), "CreateCompatibleDC");
 

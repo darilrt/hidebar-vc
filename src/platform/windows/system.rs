@@ -1,4 +1,4 @@
-//! CPU y RAM: `GetSystemTimes` + `GlobalMemoryStatusEx` cada 3 s.
+//! CPU and RAM: `GetSystemTimes` + `GlobalMemoryStatusEx` every 3 s.
 
 use std::mem::{size_of, zeroed};
 use std::time::Duration;
@@ -49,7 +49,7 @@ pub(crate) fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
 }
 
 fn read_cpu() -> Option<CpuTimes> {
-    // SAFETY: FILETIME son out inicializados; la API los rellena o devuelve 0.
+    // SAFETY: the FILETIMEs are initialized outs; the API fills them or returns 0.
     let mut idle: FILETIME = unsafe { zeroed() };
     let mut kernel: FILETIME = unsafe { zeroed() };
     let mut user: FILETIME = unsafe { zeroed() };
@@ -73,7 +73,7 @@ fn to_u64(value: FILETIME) -> u64 {
 }
 
 fn read_ram() -> Option<u8> {
-    // SAFETY: out-struct con `dwLength` correcto; la API valida el tamaño.
+    // SAFETY: out-struct with the correct `dwLength`; the API validates the size.
     let mut status: MEMORYSTATUSEX = unsafe { zeroed() };
     status.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
 
@@ -112,7 +112,7 @@ mod tests {
         };
 
         assert_eq!(cpu_percent(before, after), 50);
-        assert_eq!(cpu_percent(before, before), 0, "sin tiempo transcurrido");
-        assert_eq!(cpu_percent(after, before), 0, "deltas saturantes");
+        assert_eq!(cpu_percent(before, before), 0, "no elapsed time");
+        assert_eq!(cpu_percent(after, before), 0, "saturating deltas");
     }
 }

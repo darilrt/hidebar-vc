@@ -6,5 +6,5 @@ __pycache__/
 /AGENT.md
 /CLAUDE.md
 
-# Logs de compilación/pruebas
+# Build/test logs
 *.log

@@ -12,15 +12,15 @@ use std::process::ExitCode;
 use crate::command::Command;
 
 const USAGE: &str = "\
-uso:
-  hidebar daemon            inicia el daemon
-  hidebar show <módulo>     muestra unos segundos
-  hidebar toggle <módulo>   fija/desfija (clock: abre/cierra el calendario)
-  hidebar quit              detiene el daemon
-  hidebar install           añade hidebar al inicio de sesión (Windows)
-  hidebar uninstall         lo quita (Windows)
+usage:
+  hidebar daemon            start the daemon
+  hidebar show <module>     show for a few seconds
+  hidebar toggle <module>   pin/unpin (clock: open/close the calendar)
+  hidebar quit              stop the daemon
+  hidebar install           start hidebar at login (Windows)
+  hidebar uninstall         stop starting it at login (Windows)
 
-módulos: workspaces, clock, status (red, cpu, ram, silencio, batería), all";
+modules: workspaces, clock, status (network, cpu, ram, mute, battery), all";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

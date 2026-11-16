@@ -1,7 +1,7 @@
-# Normaliza los finales de línea en el índice; cada plataforma conserva su checkout.
+# Normalize line endings in the index; each platform keeps its own checkout.
 * text=auto
 
-# Binarios: no tocar.
+# Binaries: leave untouched.
 *.png binary
 *.jpg binary
 *.ico binary

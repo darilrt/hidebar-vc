@@ -1,4 +1,4 @@
-//! Geometría del monitor primario y DPI. Todo en píxeles físicos.
+//! Primary monitor geometry and DPI. Everything in physical pixels.
 
 use std::mem::{size_of, zeroed};
 
@@ -24,7 +24,7 @@ impl WorkArea {
         (ui::STRIP_HEIGHT as f32 * self.scale).round() as u32
     }
 
-    /// Esquina superior izquierda y tamaño físico del calendario, centrado bajo el reloj.
+    /// Top-left corner and physical size of the calendar, centered below the clock.
     pub(crate) fn calendar_rect(&self) -> (i32, i32, u32, u32) {
         let (logical_width, logical_height) = ui::calendar_size();
         let width = (logical_width as f32 * self.scale).round() as u32;
@@ -39,7 +39,7 @@ impl WorkArea {
 }
 
 pub(crate) fn primary() -> WorkArea {
-    // SAFETY: `MONITORINFO` con `cbSize`; el monitor es del sistema y el out es válido.
+    // SAFETY: `MONITORINFO` with `cbSize`; the monitor belongs to the system and the out is valid.
     let mut info: MONITORINFO = unsafe { zeroed() };
     info.cbSize = size_of::<MONITORINFO>() as u32;
 

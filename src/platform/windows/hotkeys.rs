@@ -1,4 +1,4 @@
-//! Atajos globales con `RegisterHotKey`; el shell recibe `WM_HOTKEY`.
+//! Global hotkeys with `RegisterHotKey`; the shell receives `WM_HOTKEY`.
 
 use std::io;
 
@@ -11,9 +11,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use super::logging;
 use crate::command::{Command, Target};
 
-/// Ctrl+Alt+Win no es AltGr y no pisa reabrir pestaña, cerrar ventana ni
-/// marcadores. Mostrar usa letras; fijar usa 1=reloj, 2=estado, 3=workspaces,
-/// 4=todo. No hay atajo para salir: `hidebar quit`.
+/// Ctrl+Alt+Win is not AltGr and does not clash with reopen tab, close window or
+/// bookmarks. Show uses letters; pin uses 1=clock, 2=status, 3=workspaces,
+/// 4=all. There is no hotkey to quit: `hidebar quit`.
 const HOTKEYS: [(i32, u32, u16, Command); 8] = [
     (
         1,
@@ -65,8 +65,8 @@ const HOTKEYS: [(i32, u32, u16, Command); 8] = [
     ),
 ];
 
-/// Registra todos los atajos posibles. Los que estén ocupados se omiten y se registran los demás.
-/// `HIDEBAR_NO_HOTKEYS=1` desactiva todos sin recompilar.
+/// Registers every possible hotkey. Taken ones are skipped and the rest are registered.
+/// `HIDEBAR_NO_HOTKEYS=1` disables all of them without recompiling.
 pub(crate) fn register(hwnd: HWND) -> Vec<i32> {
     if std::env::var("HIDEBAR_NO_HOTKEYS")
         .is_ok_and(|value| !matches!(value.as_str(), "0" | "false" | "no" | "off"))
@@ -82,7 +82,7 @@ pub(crate) fn register(hwnd: HWND) -> Vec<i32> {
             registered.push(id);
         } else {
             logging::error(format!(
-                "hidebar: no se pudo registrar el atajo {id}: {}",
+                "hidebar: could not register hotkey {id}: {}",
                 io::Error::last_os_error()
             ));
         }

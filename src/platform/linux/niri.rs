@@ -1,4 +1,4 @@
-//! Fuente de eventos de Niri: habla directamente con el socket IPC (`$NIRI_SOCKET`).
+//! Niri event source: talks directly to the IPC socket (`$NIRI_SOCKET`).
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -48,10 +48,10 @@ struct NiriEvent {
     workspace_active_window_changed: Option<WorkspaceActiveWindowChanged>,
 }
 
-/// Escucha Niri en un hilo propio y emite el estado de los workspaces. Sin `NIRI_SOCKET` no hace nada.
+/// Listens to Niri on its own thread and emits the workspace state. Does nothing without `NIRI_SOCKET`.
 pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
     let Some(path) = socket_path() else {
-        eprintln!("hidebar: NIRI_SOCKET no definido; sin eventos de Niri");
+        eprintln!("hidebar: NIRI_SOCKET is not set; no Niri events");
         return;
     };
     std::thread::spawn(move || {
@@ -59,7 +59,7 @@ pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
             match run(&path, &emit) {
                 Ok(Stop::ReceiverGone) => return,
                 Ok(Stop::Disconnected) => {}
-                Err(error) => eprintln!("hidebar: conexión con Niri: {error}"),
+                Err(error) => eprintln!("hidebar: Niri connection: {error}"),
             }
             std::thread::sleep(RETRY);
         }
@@ -75,8 +75,8 @@ pub fn socket_path() -> Option<PathBuf> {
     std::env::var_os("NIRI_SOCKET").map(PathBuf::from)
 }
 
-/// Niri responde en `NIRI_SOCKET`. Que el archivo exista no basta: una sesión cerrada en falso deja el socket
-/// y la variable puede heredarse (entorno de systemd), y entonces taparía a Hyprland.
+/// Niri answers on `NIRI_SOCKET`. The file existing is not enough: an uncleanly closed session leaves the socket
+/// behind and the variable may be inherited (systemd environment), which would then shadow Hyprland.
 pub fn available() -> bool {
     socket_path().is_some_and(|path| UnixStream::connect(path).is_ok())
 }
@@ -89,16 +89,16 @@ fn run(path: &Path, emit: &impl Fn(Event) -> bool) -> io::Result<Stop> {
     let mut reader = BufReader::new(stream);
     let mut reply = String::new();
     reader.read_line(&mut reply)?;
-    // La primera respuesta es {"Ok":"Handled"}; si niri la rechaza, el flujo nunca traería eventos
-    // y este hilo quedaría esperando para siempre, sin reintentar.
+    // The first reply is {"Ok":"Handled"}; if niri rejects the request, the stream would never bring events
+    // and this thread would wait forever, without retrying.
     if !reply.contains("\"Ok\"") {
         return Err(io::Error::other(format!(
-            "Niri rechazó el flujo de eventos: {}",
+            "Niri rejected the event stream: {}",
             reply.trim()
         )));
     }
 
-    // El estado completo llega al conectar y se reemplaza en cada `WorkspacesChanged`.
+    // The full state arrives on connect and is replaced on each `WorkspacesChanged`.
     let mut last: Option<Vec<NiriWorkspace>> = None;
     for line in reader.lines() {
         let Ok(event) = serde_json::from_str::<NiriEvent>(&line?) else {
@@ -112,7 +112,7 @@ fn run(path: &Path, emit: &impl Fn(Event) -> bool) -> io::Result<Stop> {
             };
             focus(workspaces, activated.id);
         } else if let Some(changed) = event.workspace_active_window_changed {
-            // Abrir o cerrar ventanas no siempre reenvía la lista: decide qué workspaces están vacíos.
+            // Opening or closing windows does not always resend the list: it decides which workspaces are empty.
             let Some(workspaces) = &mut last else {
                 continue;
             };
@@ -129,7 +129,7 @@ fn run(path: &Path, emit: &impl Fn(Event) -> bool) -> io::Result<Stop> {
     Ok(Stop::Disconnected)
 }
 
-/// Mueve el foco dentro de la lista en caché: niri no la reenvía al activar un workspace.
+/// Moves focus within the cached list: niri does not resend it when a workspace is activated.
 fn focus(workspaces: &mut [NiriWorkspace], id: u64) {
     for workspace in workspaces {
         workspace.is_focused = workspace.id == id;
@@ -142,10 +142,10 @@ fn set_active_window(workspaces: &mut [NiriWorkspace], id: u64, window: Option<u
     }
 }
 
-/// Reduce la lista de workspaces a lo que importa: los de la salida enfocada, ordenados por índice.
-/// Niri siempre deja un workspace vacío al final de cada salida: los vacíos sin nombre se omiten salvo el
-/// enfocado, como en Hyprland, donde un workspace vacío deja de existir.
-/// `None` mientras ningún workspace esté enfocado (estado transitorio): no hay nada que mostrar.
+/// Reduces the workspace list to what matters: those on the focused output, sorted by index.
+/// Niri always keeps an empty workspace at the end of each output: unnamed empty ones are skipped except the
+/// focused one, as in Hyprland, where an empty workspace stops existing.
+/// `None` while no workspace is focused (transient state): there is nothing to show.
 fn workspaces_from_list(workspaces: &[NiriWorkspace]) -> Option<Workspaces> {
     let focused = workspaces.iter().find(|workspace| workspace.is_focused)?;
     let mut ids: Vec<i32> = workspaces
@@ -168,7 +168,7 @@ fn workspaces_from_list(workspaces: &[NiriWorkspace]) -> Option<Workspaces> {
 mod tests {
     use super::*;
 
-    /// Respuesta de `"Workspaces"`: `{"Ok":{"Workspaces":[…]}}`.
+    /// Reply to `"Workspaces"`: `{"Ok":{"Workspaces":[…]}}`.
     #[derive(Deserialize)]
     struct WorkspacesReply {
         #[serde(rename = "Ok")]
@@ -278,15 +278,15 @@ mod tests {
         assert!(parse_workspaces_event("not json").is_none());
     }
 
-    /// `cargo test -- --ignored`: consulta la sesión real de Niri (sólo lectura).
+    /// `cargo test -- --ignored`: queries the real Niri session (read-only).
     #[test]
-    #[ignore = "requiere una sesión de Niri"]
+    #[ignore = "requires a Niri session"]
     fn queries_live_niri() {
         let path = socket_path().expect("NIRI_SOCKET");
         let mut stream = UnixStream::connect(path).unwrap();
         stream.write_all(b"\"Workspaces\"\n").unwrap();
         let mut reply = String::new();
-        // Niri no cierra la conexión tras responder: se lee una línea, no hasta el fin.
+        // Niri does not close the connection after replying: read one line, not until EOF.
         BufReader::new(stream).read_line(&mut reply).unwrap();
         let reply: WorkspacesReply = serde_json::from_str(&reply).unwrap();
         let workspaces = workspaces_from_list(&reply.ok.workspaces).unwrap();

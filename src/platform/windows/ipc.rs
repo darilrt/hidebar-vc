@@ -1,7 +1,7 @@
-//! IPC del daemon Windows: named pipe vía `interprocess`, mismo protocolo de texto.
+//! Windows daemon IPC: named pipe via `interprocess`, same text protocol.
 //!
-//! El nombre incluye el usuario para no chocar entre cuentas. `HIDEBAR_SOCKET`
-//! permite usar otro nombre en desarrollo.
+//! The name includes the user so accounts do not collide. `HIDEBAR_SOCKET`
+//! allows a different name during development.
 
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::sync::mpsc::Sender;
@@ -17,8 +17,8 @@ use super::win32::{SendHwnd, post_event};
 use crate::command::Command;
 use crate::state::Input;
 
-/// Crea el servidor y atiende conexiones en un hilo propio.
-/// Falla si ya hay otro daemon escuchando en el mismo nombre.
+/// Creates the server and serves connections on its own thread.
+/// Fails if another daemon is already listening on the same name.
 pub(crate) fn listen(sender: Sender<Input>, hwnd: SendHwnd) -> io::Result<()> {
     let name = full_name();
     let name = name.to_ns_name::<GenericNamespaced>()?;
@@ -29,7 +29,7 @@ pub(crate) fn listen(sender: Sender<Input>, hwnd: SendHwnd) -> io::Result<()> {
             if error.kind() == ErrorKind::PermissionDenied {
                 io::Error::new(
                     ErrorKind::AddrInUse,
-                    "ya hay un daemon escuchando; usa `hidebar quit` para cerrarlo",
+                    "a daemon is already listening; use `hidebar quit` to stop it",
                 )
             } else {
                 error
@@ -44,7 +44,7 @@ pub(crate) fn listen(sender: Sender<Input>, hwnd: SendHwnd) -> io::Result<()> {
                     let mut line = String::new();
                     let read = BufReader::new(&mut stream).read_line(&mut line);
                     let reply = if read.is_err() {
-                        "error: no se pudo leer el comando".to_owned()
+                        "error: could not read the command".to_owned()
                     } else {
                         match line.trim().parse::<Command>() {
                             Ok(command) => {
@@ -52,7 +52,7 @@ pub(crate) fn listen(sender: Sender<Input>, hwnd: SendHwnd) -> io::Result<()> {
                                     post_event(hwnd);
                                     "ok".to_owned()
                                 } else {
-                                    "error: el daemon se está cerrando".to_owned()
+                                    "error: the daemon is shutting down".to_owned()
                                 }
                             }
                             Err(message) => format!("error: {message}"),
@@ -81,11 +81,14 @@ pub(crate) fn send(command: Command) -> io::Result<String> {
         .name(name_ref)
         .connect_sync()
         .map_err(|error| {
-            if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) {
+            if matches!(
+                error.kind(),
+                ErrorKind::NotFound | ErrorKind::ConnectionRefused
+            ) {
                 io::Error::new(
                     error.kind(),
                     format!(
-                        "el daemon no está corriendo ({display_name}); inícialo con `hidebar daemon`"
+                        "the daemon is not running ({display_name}); start it with `hidebar daemon`"
                     ),
                 )
             } else {

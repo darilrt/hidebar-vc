@@ -1,4 +1,4 @@
-//! Fuente de sistema: uso de CPU (`/proc/stat`) y RAM (`/proc/meminfo`) cada pocos segundos.
+//! System source: CPU (`/proc/stat`) and RAM (`/proc/meminfo`) usage every few seconds.
 
 use std::fs;
 use std::time::Duration;
@@ -7,15 +7,15 @@ use crate::event::{Event, System};
 
 const POLL: Duration = Duration::from_secs(3);
 
-/// Contadores acumulados de CPU: tiempo total y tiempo inactivo.
+/// Cumulative CPU counters: total time and idle time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CpuTimes {
     total: u64,
     idle: u64,
 }
 
-/// Sondea en un hilo propio y emite sólo cuando cambian los porcentajes.
-/// `emit` devuelve `false` cuando el receptor ya no existe.
+/// Polls on its own thread and emits only when the percentages change.
+/// `emit` returns `false` once the receiver is gone.
 pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
     std::thread::spawn(move || {
         let mut previous = read_cpu();
@@ -51,8 +51,8 @@ fn read_ram() -> Option<u8> {
     parse_ram(&fs::read_to_string("/proc/meminfo").ok()?)
 }
 
-/// Primera línea `cpu  user nice system idle iowait irq softirq steal ...`.
-/// Inactivo = idle + iowait. Se ignoran guest/guest_nice (ya incluidos en user/nice).
+/// First line `cpu  user nice system idle iowait irq softirq steal ...`.
+/// Idle = idle + iowait. guest/guest_nice are ignored (already included in user/nice).
 fn parse_cpu(stat: &str) -> Option<CpuTimes> {
     let line = stat.lines().find(|line| line.starts_with("cpu "))?;
     let fields: Vec<u64> = line
@@ -81,7 +81,7 @@ fn cpu_percent(before: CpuTimes, after: CpuTimes) -> u8 {
     ((busy * 100 + total / 2) / total).min(100) as u8
 }
 
-/// `1 - MemAvailable / MemTotal`, redondeado.
+/// `1 - MemAvailable / MemTotal`, rounded.
 fn parse_ram(meminfo: &str) -> Option<u8> {
     let field = |name: &str| -> Option<u64> {
         meminfo
@@ -129,7 +129,7 @@ mod tests {
             idle: 900,
         };
         assert_eq!(cpu_percent(before, after), 50);
-        assert_eq!(cpu_percent(before, before), 0, "sin tiempo transcurrido");
+        assert_eq!(cpu_percent(before, before), 0, "no elapsed time");
     }
 
     #[test]
@@ -139,9 +139,9 @@ mod tests {
         assert_eq!(parse_ram("MemTotal: 10 kB\n"), None);
     }
 
-    /// `cargo test -- --ignored`: lee `/proc` real.
+    /// `cargo test -- --ignored`: reads the real `/proc`.
     #[test]
-    #[ignore = "lee /proc del equipo"]
+    #[ignore = "reads the machine's /proc"]
     fn reads_real_proc() {
         let before = read_cpu().unwrap();
         std::thread::sleep(Duration::from_millis(500));

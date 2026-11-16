@@ -59,7 +59,7 @@ keys change month; clicking the title or pressing `Home` goes back to the curren
 another `toggle clock`, or by clicking another window. It is the only part of the overlay that takes cursor and
 keyboard input.
 
-The interface (dates, CLI messages) is in Spanish.
+The interface (dates, CLI messages) is in English.
 
 ## Requirements
 

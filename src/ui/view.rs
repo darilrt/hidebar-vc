@@ -1,4 +1,4 @@
-//! Dibujo de las superficies: pastillas de la franja (módulos y avisos) y calendario.
+//! Surface drawing: strip pills (modules and notices) and the calendar.
 
 use chrono::Datelike;
 use std::sync::LazyLock;
@@ -11,10 +11,10 @@ use crate::calendar::{self, WEEKDAYS_SHORT};
 use crate::event::{Audio, Battery, BatteryStatus, Network, System, Workspaces};
 use crate::state::{Hidebar, Module, Notice, Severity, severity};
 
-/// Alto de la superficie de la franja, en píxeles lógicos.
+/// Height of the strip surface, in logical pixels.
 pub(crate) const STRIP_HEIGHT: u32 = 34;
 const PILL_BACKGROUND: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.6);
-/// Pastillas: alto, separación del borde superior y de los laterales, relleno horizontal.
+/// Pills: height, gap from the top edge and from the sides, horizontal padding.
 const PILL_HEIGHT: f32 = 26.0;
 const PILL_TOP: f32 = 6.0;
 const PILL_SIDE: f32 = 12.0;
@@ -26,7 +26,7 @@ const WARNING_COLOR: Color = Color::from_rgb(1.0, 0.65, 0.25);
 const CRITICAL_COLOR: Color = Color::from_rgb(1.0, 0.42, 0.21);
 const CHARGING_COLOR: Color = Color::from_rgb(1.0, 0.82, 0.25);
 
-/// Iconos propios (`assets/icons/`), embebidos en el binario y teñidos al dibujarlos.
+/// Own icons (`assets/icons/`), embedded in the binary and tinted when drawn.
 const ICON_SIZE: f32 = 14.0;
 static ICON_NET: LazyLock<svg::Handle> =
     LazyLock::new(|| icon(include_bytes!("../../assets/icons/net.svg")));
@@ -45,7 +45,7 @@ fn icon(bytes: &'static [u8]) -> svg::Handle {
     svg::Handle::from_memory(bytes)
 }
 
-/// Calendario: celdas, relleno y separación bajo la franja.
+/// Calendar: cells, padding and gap below the strip.
 const CELL: f32 = 28.0;
 const CALENDAR_PADDING: f32 = 12.0;
 const CALENDAR_HEADER: f32 = 28.0;
@@ -61,7 +61,7 @@ pub(crate) fn view(state: &Hidebar, surface: Surface) -> Element<'_, Message> {
 
 pub(crate) fn calendar_size() -> (u32, u32) {
     let width = 7.0 * CELL + 2.0 * CALENDAR_PADDING;
-    // Título, fila de días de la semana y las semanas.
+    // Title, weekday row and the weeks.
     let height = CALENDAR_HEADER + CELL * (1 + calendar::WEEKS) as f32 + 2.0 * CALENDAR_PADDING;
     (width as u32, height as u32)
 }
@@ -76,7 +76,7 @@ fn strip_view(state: &Hidebar) -> Element<'_, Message> {
         state.workspaces.as_ref().map(workspaces_view),
     );
     let center = module(Module::Clock, Some(clock_view(state)));
-    // A la derecha, `status` completo o, si está oculto, los avisos activos.
+    // On the right, the full `status` or, if hidden, the active notices.
     let notices = state.active_notices();
     let right = if state.visible(Module::Status) {
         pill(status_view(state))
@@ -86,8 +86,8 @@ fn strip_view(state: &Hidebar) -> Element<'_, Message> {
         space().into()
     };
 
-    // Los laterales ocupan el mismo ancho, así el centro queda centrado.
-    // Sólo las pastillas tienen fondo; el resto de la superficie es transparente.
+    // Both sides take the same width, so the center stays centered.
+    // Only the pills have a background; the rest of the surface is transparent.
     let line = row![
         container(left).width(Length::Fill),
         center,
@@ -107,7 +107,7 @@ fn strip_view(state: &Hidebar) -> Element<'_, Message> {
         .into()
 }
 
-/// Fondo en forma de pastilla alrededor de un elemento.
+/// Pill-shaped background around an element.
 fn pill(content: Element<'static, Message>) -> Element<'static, Message> {
     container(content)
         .center_y(PILL_HEIGHT)
@@ -130,7 +130,7 @@ fn clock_view(state: &Hidebar) -> Element<'static, Message> {
     .into()
 }
 
-/// Un punto por workspace; relleno el activo.
+/// One dot per workspace; the active one filled.
 fn workspaces_view(workspaces: &Workspaces) -> Element<'static, Message> {
     let dots = workspaces
         .ids
@@ -139,8 +139,8 @@ fn workspaces_view(workspaces: &Workspaces) -> Element<'static, Message> {
     Row::with_children(dots).spacing(6).into()
 }
 
-/// red · cpu · ram · silencio · batería. Lo que todavía no tiene lectura no se muestra;
-/// el silencio, sólo si no se oye nada.
+/// network · cpu · ram · mute · battery. Anything without a reading yet is not shown;
+/// mute, only when nothing is audible.
 fn status_view(state: &Hidebar) -> Element<'static, Message> {
     let mut line = Row::new().spacing(12).align_y(Alignment::Center);
     if let Some(network) = state.network {
@@ -160,7 +160,7 @@ fn status_view(state: &Hidebar) -> Element<'static, Message> {
     line.into()
 }
 
-/// Avisos juntos en una pastilla, con el mismo aspecto que en `status`. La batería, sólo el icono.
+/// Notices together in one pill, looking the same as in `status`. Battery: icon only.
 fn notices_view(state: &Hidebar, notices: &[Notice]) -> Element<'static, Message> {
     let items = notices.iter().filter_map(|notice| match notice {
         Notice::Network => state.network.map(network_view),
@@ -176,7 +176,7 @@ fn notices_view(state: &Hidebar, notices: &[Notice]) -> Element<'static, Message
         .into()
 }
 
-/// Altavoz tachado sin sonido; altavoz normal con sonido.
+/// Crossed-out speaker when silent; regular speaker with sound.
 fn audio_view(audio: Audio) -> Element<'static, Message> {
     let icon = if audio.silent() {
         &ICON_MUTED
@@ -186,7 +186,7 @@ fn audio_view(audio: Audio) -> Element<'static, Message> {
     tinted(icon, Color::WHITE)
 }
 
-/// Wifi blanco con internet, naranja sin salida, naranja-rojo tachado sin red.
+/// White wifi with internet, orange with no way out, crossed-out orange-red with no network.
 fn network_view(network: Network) -> Element<'static, Message> {
     let (icon, color) = match network {
         Network::Online => (&ICON_NET, Color::WHITE),
@@ -196,7 +196,7 @@ fn network_view(network: Network) -> Element<'static, Message> {
     tinted(icon, color)
 }
 
-/// Icono tenue + «12 %» en blanco.
+/// Dim icon + "12 %" in white.
 fn metric(icon: &svg::Handle, percent: u8) -> Element<'static, Message> {
     row![
         tinted(icon, DIM),
@@ -215,7 +215,7 @@ fn tinted(icon: &svg::Handle, color: Color) -> Element<'static, Message> {
         .into()
 }
 
-/// Círculo relleno o sólo contorno.
+/// Filled circle or outline only.
 fn circle(size: f32, color: Color, filled: bool) -> Element<'static, Message> {
     container(space())
         .width(size)
@@ -232,20 +232,20 @@ fn circle(size: f32, color: Color, filled: bool) -> Element<'static, Message> {
         .into()
 }
 
-/// «cargando 80 %» + icono. Mismos estados que el aviso de batería: amarillo cargando,
-/// blanco o naranja-rojo pulsando con batería baja o crítica.
+/// "charging 80 %" + icon. Same states as the battery notice: yellow while charging,
+/// white, or pulsing orange-red with low or critical battery.
 fn battery_view(battery: &Battery, pulse: f32) -> Element<'static, Message> {
     let color = battery_shade(battery, pulse);
     let mut line = Row::new().spacing(6).align_y(Alignment::Center);
     if battery.status == BatteryStatus::Charging {
-        line = line.push(text("cargando").size(11).color(CHARGING_COLOR));
+        line = line.push(text("charging").size(11).color(CHARGING_COLOR));
     }
     line.push(text(format!("{} %", battery.percent)).size(12).color(color))
         .push(battery_icon(battery, pulse))
         .into()
 }
 
-/// Color de la batería con el pulso aplicado si está baja.
+/// Battery color with the pulse applied when low.
 fn battery_shade(battery: &Battery, pulse: f32) -> Color {
     let color = battery_color(battery);
     if severity(battery) == Severity::Normal {
@@ -255,7 +255,7 @@ fn battery_shade(battery: &Battery, pulse: f32) -> Color {
     }
 }
 
-/// Cuerpo de la pila con el relleno según el nivel, y el borne.
+/// Battery body filled according to the level, plus the terminal.
 fn battery_icon(battery: &Battery, pulse: f32) -> Element<'static, Message> {
     const BODY_WIDTH: f32 = 20.0;
     const BODY_HEIGHT: f32 = 10.0;
@@ -297,7 +297,7 @@ fn battery_icon(battery: &Battery, pulse: f32) -> Element<'static, Message> {
     row![body, nub].align_y(Alignment::Center).into()
 }
 
-/// ‹ mes año ›, encabezados lu–do y la grilla; hoy resaltado.
+/// ‹ month year ›, Mo–Su headers and the grid; today highlighted.
 fn calendar_view(state: &Hidebar) -> Element<'static, Message> {
     let Some(open) = &state.calendar else {
         return space().into();
@@ -354,7 +354,7 @@ fn cell(content: Element<'static, Message>) -> Element<'static, Message> {
     container(content).center(CELL).into()
 }
 
-/// Día de hoy: número oscuro sobre círculo blanco.
+/// Today: dark number on a white circle.
 fn today_mark(day: u32) -> Element<'static, Message> {
     container(text(day.to_string()).size(12).color(Color::BLACK))
         .center(CELL - 4.0)
@@ -374,7 +374,7 @@ fn nav_button(label: &'static str, message: Message) -> Element<'static, Message
         .into()
 }
 
-/// Botón sin fondo; un leve resalte al pasar el cursor.
+/// Button without background; a slight highlight on hover.
 fn flat_button(_: &iced::Theme, status: button::Status) -> button::Style {
     let hover = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
@@ -385,7 +385,7 @@ fn flat_button(_: &iced::Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Color de la batería: amarillo cargando; si no, según severidad.
+/// Battery color: yellow while charging; otherwise by severity.
 fn battery_color(battery: &Battery) -> Color {
     if battery.status == BatteryStatus::Charging {
         CHARGING_COLOR

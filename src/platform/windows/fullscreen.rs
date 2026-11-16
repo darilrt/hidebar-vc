@@ -1,4 +1,4 @@
-//! Detecta juegos/presentaciones a pantalla completa para ocultar el overlay.
+//! Detects full-screen games/presentations to hide the overlay.
 
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -33,7 +33,7 @@ pub(crate) fn listen(sender: Sender<bool>, hwnd: SendHwnd) {
 }
 
 fn query() -> bool {
-    // SAFETY: out param válido; el HRESULT se comprueba antes de leer `state`.
+    // SAFETY: valid out param; the HRESULT is checked before reading `state`.
     let mut state: QUERY_USER_NOTIFICATION_STATE = 0;
     let result = unsafe { SHQueryUserNotificationState(&mut state) };
     result >= 0 && hides(state)

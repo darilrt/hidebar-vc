@@ -1,5 +1,5 @@
-//! Fuente de audio: silencio y volumen de la salida por defecto, vía `pactl`
-//! (PipeWire con pipewire-pulse, o PulseAudio). Se entera de los cambios con `pactl subscribe`.
+//! Audio source: mute and volume of the default output, via `pactl`
+//! (PipeWire with pipewire-pulse, or PulseAudio). Learns about changes with `pactl subscribe`.
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -9,12 +9,12 @@ use crate::event::{Audio, Event};
 
 const RETRY: Duration = Duration::from_secs(5);
 
-/// Escucha en un hilo propio. Emite el estado inicial y luego sólo los cambios.
-/// `emit` devuelve `false` cuando el receptor ya no existe. Sin `pactl` no hace nada.
+/// Listens on its own thread. Emits the initial state and then only changes.
+/// `emit` returns `false` once the receiver is gone. Does nothing without `pactl`.
 pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
     std::thread::spawn(move || {
         let mut last = None;
-        // Lee y emite si cambió; devuelve `false` si ya no hay receptor.
+        // Reads and emits if changed; returns `false` if the receiver is gone.
         let refresh = |last: &mut Option<Audio>| match read() {
             Some(audio) if *last != Some(audio) => {
                 *last = Some(audio);
@@ -32,7 +32,7 @@ pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
                 .stderr(Stdio::null())
                 .spawn();
             let Ok(mut child) = child else {
-                // Sin pactl: no hay módulo de audio.
+                // No pactl: no audio module.
                 return;
             };
             if let Some(stdout) = child.stdout.take() {
@@ -43,14 +43,14 @@ pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
                     }
                 }
             }
-            // El servidor de sonido se reinició o pactl terminó: reintentar.
+            // The sound server restarted or pactl exited: retry.
             let _ = child.wait();
             std::thread::sleep(RETRY);
         }
     });
 }
 
-/// Cambios en una salida (volumen, silencio) o en el servidor (salida por defecto).
+/// Changes to a sink (volume, mute) or to the server (default sink).
 fn is_relevant(line: &str) -> bool {
     line.starts_with("Event 'change' on sink #")
         || line.starts_with("Event 'new' on sink #")
@@ -87,7 +87,7 @@ fn parse_mute(output: &str) -> Option<bool> {
     }
 }
 
-/// `Volume: front-left: 65536 / 100% / 0.00 dB, ...` → el primer porcentaje.
+/// `Volume: front-left: 65536 / 100% / 0.00 dB, ...` → the first percentage.
 fn parse_volume(output: &str) -> Option<u16> {
     output
         .split('/')
@@ -114,7 +114,7 @@ mod tests {
             parse_volume("Volume: front-left: 98304 / 150% / 10.57 dB"),
             Some(150)
         );
-        assert_eq!(parse_volume("sin datos"), None);
+        assert_eq!(parse_volume("no data"), None);
     }
 
     #[test]
@@ -151,9 +151,9 @@ mod tests {
         );
     }
 
-    /// `cargo test -- --ignored`: lee la salida de audio real.
+    /// `cargo test -- --ignored`: reads the real audio output.
     #[test]
-    #[ignore = "requiere pactl y un servidor de sonido"]
+    #[ignore = "requires pactl and a sound server"]
     fn reads_real_audio() {
         let audio = read().expect("pactl");
         println!("{audio:?}");

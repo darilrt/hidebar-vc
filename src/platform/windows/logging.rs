@@ -1,4 +1,4 @@
-//! Log mínimo a `%LOCALAPPDATA%\hidebar\hidebar.log`, con rotación a 1 MB.
+//! Minimal log to `%LOCALAPPDATA%\hidebar\hidebar.log`, rotated at 1 MB.
 
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};

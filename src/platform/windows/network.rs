@@ -1,5 +1,5 @@
-//! Red: ruta por defecto (`GetAdaptersAddresses` + gateway) y, si la hay, un
-//! probe TCP a `1.1.1.1:443` sin enviar datos. Misma semántica que en Linux.
+//! Network: default route (`GetAdaptersAddresses` + gateway) and, if there is one, a
+//! TCP probe to `1.1.1.1:443` without sending data. Same semantics as on Linux.
 
 use std::ffi::c_void;
 use std::net::{SocketAddr, TcpStream};
@@ -33,7 +33,7 @@ pub(crate) fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
         loop {
             let has_route = has_default_route();
             let network = if has_route {
-                // Se prueba al aparecer la ruta y luego cada PROBE_EVERY.
+                // Probe when the route appears and then every PROBE_EVERY.
                 let due =
                     !had_route || last_probe.is_none_or(|(at, _)| at.elapsed() >= PROBE_EVERY);
                 if due {
@@ -65,12 +65,12 @@ fn probe() -> bool {
     TcpStream::connect_timeout(&PROBE_TARGET, PROBE_TIMEOUT).is_ok()
 }
 
-/// Hay al menos un adaptador activo, no loopback/túnel, con gateway.
+/// There is at least one active, non-loopback/tunnel adapter with a gateway.
 fn has_default_route() -> bool {
     let flags = GAA_FLAG_INCLUDE_GATEWAYS;
     let mut size = 0u32;
 
-    // SAFETY: consulta de tamaño; el buffer nulo es válido y `size` es un out.
+    // SAFETY: size query; a null buffer is valid and `size` is an out.
     unsafe {
         GetAdaptersAddresses(
             AF_UNSPEC as u32,
@@ -91,8 +91,8 @@ fn has_default_route() -> bool {
     for _ in 0..3 {
         buffer = vec![0u64; (size as usize).div_ceil(8)];
 
-        // SAFETY: `buffer` está alineado a 8 bytes y tiene al menos `size`;
-        // la API escribe la lista de adaptadores dentro de él.
+        // SAFETY: `buffer` is 8-byte aligned and at least `size` long;
+        // the API writes the adapter list into it.
         let result = unsafe {
             GetAdaptersAddresses(
                 AF_UNSPEC as u32,
@@ -116,8 +116,8 @@ fn has_default_route() -> bool {
         return false;
     }
 
-    // SAFETY: los punteros de la lista apuntan dentro de `buffer`, que sigue vivo
-    // hasta que termina la función.
+    // SAFETY: the list pointers point into `buffer`, which stays alive
+    // until the function returns.
     let mut current = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
     unsafe {
         while !current.is_null() {
@@ -153,14 +153,14 @@ mod tests {
         assert!(!usable(IfOperStatusUp, IF_TYPE_SOFTWARE_LOOPBACK, true));
         assert!(!usable(IfOperStatusUp, IF_TYPE_TUNNEL, true));
         assert!(!usable(IfOperStatusUp, 6, false));
-        assert!(!usable(2, 6, true), "adaptador caído");
+        assert!(!usable(2, 6, true), "adapter down");
     }
 
-    /// `cargo test -- --ignored`: usa la red del equipo.
+    /// `cargo test -- --ignored`: uses the machine's network.
     #[test]
-    #[ignore = "usa la red del equipo"]
+    #[ignore = "uses the machine's network"]
     fn checks_real_network() {
         let route = has_default_route();
-        println!("ruta por defecto: {route}, salida: {}", route && probe());
+        println!("default route: {route}, internet: {}", route && probe());
     }
 }

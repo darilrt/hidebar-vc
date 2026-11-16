@@ -1,20 +1,20 @@
-//! Comandos que entiende el daemon. Parseo y presentación, sin transporte.
+//! Commands the daemon understands. Parsing and formatting, no transport.
 
 use std::fmt;
 use std::str::FromStr;
 
-/// Comandos que el daemon entiende.
+/// Commands the daemon understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    /// Muestra unos segundos.
+    /// Show for a few seconds.
     Show(Target),
-    /// El módulo decide: fijar/desfijar, o abrir/cerrar su panel (reloj → calendario).
+    /// The module decides: pin/unpin, or open/close its panel (clock → calendar).
     Toggle(Target),
-    /// Cierra el daemon.
+    /// Stop the daemon.
     Quit,
 }
 
-/// Módulos de la franja, o todos a la vez.
+/// Strip modules, or all of them at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Workspaces,
@@ -47,16 +47,16 @@ impl FromStr for Command {
         let verb: fn(Target) -> Self = match words.first() {
             Some(&"show") => Self::Show,
             Some(&"toggle") => Self::Toggle,
-            None => return Err("comando vacío".into()),
-            _ => return Err(format!("comando desconocido: {}", words.join(" "))),
+            None => return Err("empty command".into()),
+            _ => return Err(format!("unknown command: {}", words.join(" "))),
         };
         match words.as_slice() {
             [_, name] => Target::ALL
                 .into_iter()
                 .find(|target| target.name() == *name)
                 .map(verb)
-                .ok_or_else(|| format!("módulo desconocido: {name}")),
-            _ => Err(format!("comando desconocido: {}", words.join(" "))),
+                .ok_or_else(|| format!("unknown module: {name}")),
+            _ => Err(format!("unknown command: {}", words.join(" "))),
         }
     }
 }
@@ -91,7 +91,7 @@ mod tests {
         assert!("show".parse::<Command>().is_err());
         assert!(
             "show battery".parse::<Command>().is_err(),
-            "reemplazado por status"
+            "replaced by status"
         );
         assert!("hide clock".parse::<Command>().is_err());
         assert!("show workspaces now".parse::<Command>().is_err());

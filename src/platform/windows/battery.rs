@@ -1,7 +1,7 @@
-//! Batería: `GetSystemPowerStatus` cada 10 s.
+//! Battery: `GetSystemPowerStatus` every 10 s.
 //!
-//! `BatteryFlag` no distingue "lleno" de "conectado sin cargar"; se deduce con
-//! el porcentaje. `255` significa desconocido y no se inventa un nivel.
+//! `BatteryFlag` does not tell "full" from "plugged in, not charging"; it is inferred from
+//! the percentage. `255` means unknown and no level is made up.
 
 use std::mem::zeroed;
 use std::time::Duration;
@@ -35,7 +35,7 @@ pub(crate) fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
 }
 
 fn read() -> Option<Battery> {
-    // SAFETY: out-struct zeroed; la API lo rellena o devuelve 0.
+    // SAFETY: zeroed out-struct; the API fills it or returns 0.
     let mut status: SYSTEM_POWER_STATUS = unsafe { zeroed() };
 
     if unsafe { GetSystemPowerStatus(&mut status) } == 0 {

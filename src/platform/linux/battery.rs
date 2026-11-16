@@ -1,7 +1,7 @@
-//! Fuente de batería: sondea `/sys/class/power_supply/BAT*` y emite un evento cuando cambia.
+//! Battery source: polls `/sys/class/power_supply/BAT*` and emits an event when it changes.
 //!
-//! `HIDEBAR_BATTERY_PATH` puede apuntar a un directorio con archivos `capacity` y `status`
-//! para simular niveles en pruebas manuales.
+//! `HIDEBAR_BATTERY_PATH` may point to a directory with `capacity` and `status` files
+//! to simulate levels in manual tests.
 
 use std::fs;
 use std::io;
@@ -13,8 +13,8 @@ use crate::event::{Battery, BatteryStatus, Event};
 const POWER_SUPPLY: &str = "/sys/class/power_supply";
 const POLL: Duration = Duration::from_secs(10);
 
-/// Sondea la batería en un hilo propio. Emite el estado inicial y luego sólo los cambios.
-/// `emit` devuelve `false` cuando el receptor ya no existe. Sin batería no hace nada.
+/// Polls the battery on its own thread. Emits the initial state and then only changes.
+/// `emit` returns `false` once the receiver is gone. Does nothing without a battery.
 pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
     let Some(dir) = battery_dir() else {
         return;
@@ -30,7 +30,7 @@ pub fn listen(emit: impl Fn(Event) -> bool + Send + 'static) {
                     }
                 }
                 Ok(_) => {}
-                Err(error) => eprintln!("hidebar: batería ({}): {error}", dir.display()),
+                Err(error) => eprintln!("hidebar: battery ({}): {error}", dir.display()),
             }
             std::thread::sleep(POLL);
         }
@@ -58,7 +58,7 @@ fn read(dir: &Path) -> io::Result<Battery> {
     parse(&capacity, &status).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("capacidad inválida: {capacity:?}"),
+            format!("invalid capacity: {capacity:?}"),
         )
     })
 }
@@ -100,11 +100,11 @@ mod tests {
         assert_eq!(parse("abc", "Full"), None);
     }
 
-    /// `cargo test -- --ignored`: lee la batería real del equipo (sólo lectura).
+    /// `cargo test -- --ignored`: reads the machine's real battery (read-only).
     #[test]
-    #[ignore = "requiere una batería en /sys/class/power_supply"]
+    #[ignore = "requires a battery in /sys/class/power_supply"]
     fn reads_real_battery() {
-        let dir = battery_dir().expect("sin batería");
+        let dir = battery_dir().expect("no battery");
         let battery = read(&dir).unwrap();
         println!("{} → {battery:?}", dir.display());
         assert!(battery.percent <= 100);

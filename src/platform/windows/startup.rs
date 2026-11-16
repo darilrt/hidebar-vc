@@ -1,5 +1,5 @@
-//! Autoarranque en `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
-//! Sin admin y sin tocar el sistema: una sola clave por usuario.
+//! Autostart in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+//! No admin and no system changes: a single per-user key.
 
 use std::process::ExitCode;
 
@@ -16,7 +16,7 @@ pub(crate) fn install() -> ExitCode {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(error) => {
-            eprintln!("hidebar: no se pudo resolver el ejecutable: {error}");
+            eprintln!("hidebar: could not resolve the executable: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -24,11 +24,11 @@ pub(crate) fn install() -> ExitCode {
     let command = format!("\"{}\" daemon", exe.display());
     match write(&command) {
         Ok(()) => {
-            println!("hidebar: instalado en el inicio de sesión ({command})");
+            println!("hidebar: installed to start at login ({command})");
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("hidebar: no se pudo instalar el autoarranque: {error}");
+            eprintln!("hidebar: could not install autostart: {error}");
             ExitCode::FAILURE
         }
     }
@@ -37,11 +37,11 @@ pub(crate) fn install() -> ExitCode {
 pub(crate) fn uninstall() -> ExitCode {
     match remove() {
         Ok(()) => {
-            println!("hidebar: autoarranque eliminado");
+            println!("hidebar: autostart removed");
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("hidebar: no se pudo quitar el autoarranque: {error}");
+            eprintln!("hidebar: could not remove autostart: {error}");
             ExitCode::FAILURE
         }
     }
@@ -50,14 +50,14 @@ pub(crate) fn uninstall() -> ExitCode {
 fn write(command: &str) -> windows::core::Result<()> {
     let key = open()?;
     let utf16: Vec<u16> = command.encode_utf16().chain(std::iter::once(0)).collect();
-    // SAFETY: `utf16` vive hasta que termina `RegSetValueExW`; el tamaño en bytes
-    // corresponde a `utf16.len() * size_of::<u16>()`.
+    // SAFETY: `utf16` lives until `RegSetValueExW` returns; the size in bytes
+    // is `utf16.len() * size_of::<u16>()`.
     let bytes = unsafe { std::slice::from_raw_parts(utf16.as_ptr().cast(), utf16.len() * 2) };
 
-    // SAFETY: `key` está abierta; el nombre y los datos viven durante la llamada.
+    // SAFETY: `key` is open; the name and data live during the call.
     let result =
         unsafe { RegSetValueExW(key, &HSTRING::from(VALUE_NAME), None, REG_SZ, Some(bytes)) };
-    // SAFETY: `key` es válida y no se usa después de cerrarla.
+    // SAFETY: `key` is valid and not used after closing it.
     unsafe {
         let _ = RegCloseKey(key);
     }
@@ -66,9 +66,9 @@ fn write(command: &str) -> windows::core::Result<()> {
 
 fn remove() -> windows::core::Result<()> {
     let key = open()?;
-    // SAFETY: `key` está abierta y el nombre vive durante la llamada.
+    // SAFETY: `key` is open and the name lives during the call.
     let result = unsafe { RegDeleteValueW(key, &HSTRING::from(VALUE_NAME)) };
-    // SAFETY: `key` es válida y no se usa después.
+    // SAFETY: `key` is valid and not used afterwards.
     unsafe {
         let _ = RegCloseKey(key);
     }
@@ -78,8 +78,8 @@ fn remove() -> windows::core::Result<()> {
 fn open() -> windows::core::Result<HKEY> {
     let mut key = HKEY::default();
 
-    // SAFETY: `HKEY_CURRENT_USER` es válido; el nombre y la clase viven durante
-    // la llamada; `key` es un out inicializado por la API.
+    // SAFETY: `HKEY_CURRENT_USER` is valid; the name and class live during
+    // the call; `key` is an out initialized by the API.
     let result = unsafe {
         RegCreateKeyExW(
             HKEY_CURRENT_USER,
