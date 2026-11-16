@@ -1,4 +1,4 @@
-//! Shared views: drawing of the strip and the calendar with iced widgets.
+//! Shared views: drawing of the strip, the calendar and the status panel with iced widgets.
 //!
 //! The shell decides which surface to draw; there are no Wayland, Win32 or
 //! window types here. The same view is used with wgpu (Linux) and tiny-skia (Windows).
@@ -7,14 +7,19 @@ mod view;
 
 use iced::Element;
 
-use crate::state::Hidebar;
+use crate::state::{Action, Hidebar};
 
-/// Messages produced by interacting with the view (calendar).
+/// Messages produced by interacting with the view (calendar and status panel).
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     Month(i32),
     Today,
     Close,
+    /// Session action button pressed: arms it, or confirms it if already armed.
+    #[cfg_attr(windows, allow(dead_code))]
+    Press(Action),
+    /// The cursor left a session action button.
+    Disarm,
 }
 
 /// Surface being drawn.
@@ -22,6 +27,8 @@ pub(crate) enum Message {
 pub(crate) enum Surface {
     Strip,
     Calendar,
+    #[cfg_attr(windows, allow(dead_code))]
+    Panel,
 }
 
 pub(crate) fn view(state: &Hidebar, surface: Surface) -> Element<'_, Message> {
@@ -29,3 +36,6 @@ pub(crate) fn view(state: &Hidebar, surface: Surface) -> Element<'_, Message> {
 }
 
 pub(crate) use view::{CALENDAR_GAP, STRIP_HEIGHT, calendar_size};
+// The panel surface is Linux-only for now (ADR-0005 Q4).
+#[cfg(target_os = "linux")]
+pub(crate) use view::{PANEL_SIDE, panel_size};

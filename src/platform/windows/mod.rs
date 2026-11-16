@@ -268,6 +268,8 @@ impl Shell {
             ui::Message::Month(delta) => self.state.shift_calendar(delta),
             ui::Message::Today => self.state.calendar_today(),
             ui::Message::Close => self.state.close_calendar(),
+            // The status panel is Linux-only for now (ADR-0005 Q4).
+            ui::Message::Press(_) | ui::Message::Disarm => {}
         }
     }
 

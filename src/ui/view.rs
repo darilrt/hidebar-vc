@@ -1,15 +1,15 @@
-//! Surface drawing: strip pills (modules and notices) and the calendar.
+//! Surface drawing: strip pills (modules and notices), the calendar and the status panel.
 
 use chrono::Datelike;
 use std::sync::LazyLock;
 
-use iced::widget::{Column, Row, button, column, container, row, space, svg, text};
+use iced::widget::{Column, Row, button, column, container, mouse_area, row, space, svg, text};
 use iced::{Alignment, Border, Color, Element, Length, Padding};
 
 use super::{Message, Surface};
 use crate::calendar::{self, WEEKDAYS_SHORT};
 use crate::event::{Audio, Battery, BatteryStatus, Network, System, Workspaces};
-use crate::state::{Hidebar, Module, Notice, Severity, severity};
+use crate::state::{Action, Hidebar, Module, Notice, Severity, severity};
 
 /// Height of the strip surface, in logical pixels.
 pub(crate) const STRIP_HEIGHT: u32 = 34;
@@ -40,6 +40,10 @@ static ICON_MUTED: LazyLock<svg::Handle> =
     LazyLock::new(|| icon(include_bytes!("../../assets/icons/muted.svg")));
 static ICON_SPEAKER: LazyLock<svg::Handle> =
     LazyLock::new(|| icon(include_bytes!("../../assets/icons/speaker.svg")));
+static ICON_POWER: LazyLock<svg::Handle> =
+    LazyLock::new(|| icon(include_bytes!("../../assets/icons/power.svg")));
+static ICON_LOGOUT: LazyLock<svg::Handle> =
+    LazyLock::new(|| icon(include_bytes!("../../assets/icons/logout.svg")));
 
 fn icon(bytes: &'static [u8]) -> svg::Handle {
     svg::Handle::from_memory(bytes)
@@ -52,11 +56,42 @@ const CALENDAR_HEADER: f32 = 28.0;
 pub(crate) const CALENDAR_GAP: i32 = 4;
 const CALENDAR_BACKGROUND: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.8);
 
+/// Status panel (ADR-0005): width, padding, gap between sections and the heights of each section.
+#[cfg_attr(windows, allow(dead_code))]
+const PANEL_WIDTH: f32 = 300.0;
+const PANEL_PADDING: f32 = 14.0;
+const PANEL_GAP: f32 = 14.0;
+const METER_LABEL: f32 = 18.0;
+const METER_BAR: f32 = 4.0;
+const METER_WARNING: u8 = 90;
+const INFO_ROW: f32 = 20.0;
+const INFO_ROWS: f32 = 3.0;
+const INFO_GAP: f32 = 10.0;
+const ACTION_BUTTON: f32 = 44.0;
+const ACTION_ICON: f32 = 18.0;
+/// Gap between the panel and the right screen edge: aligned with the `status` pill.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) const PANEL_SIDE: i32 = PILL_SIDE as i32;
+
 pub(crate) fn view(state: &Hidebar, surface: Surface) -> Element<'_, Message> {
     match surface {
         Surface::Strip => strip_view(state),
         Surface::Calendar => calendar_view(state),
+        Surface::Panel => panel_view(state),
     }
+}
+
+/// Meters, information rows, separator and action buttons.
+#[cfg_attr(windows, allow(dead_code))]
+fn panel_height() -> f32 {
+    let meters = METER_LABEL + 6.0 + METER_BAR;
+    let info = INFO_ROW * INFO_ROWS + INFO_GAP * (INFO_ROWS - 1.0);
+    2.0 * PANEL_PADDING + meters + info + 1.0 + ACTION_BUTTON + 3.0 * PANEL_GAP
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) fn panel_size() -> (u32, u32) {
+    (PANEL_WIDTH as u32, panel_height().ceil() as u32)
 }
 
 pub(crate) fn calendar_size() -> (u32, u32) {
@@ -350,6 +385,200 @@ fn calendar_view(state: &Hidebar) -> Element<'static, Message> {
         .into()
 }
 
+/// Status panel: CPU/RAM meters, battery, network and audio rows, and the session actions.
+fn panel_view(state: &Hidebar) -> Element<'static, Message> {
+    let Some(panel) = &state.panel else {
+        return space().into();
+    };
+
+    let meters = match state.system {
+        Some(System { cpu, ram }) => {
+            row![meter(&ICON_CPU, "CPU", cpu), meter(&ICON_RAM, "RAM", ram)]
+                .spacing(PANEL_GAP)
+                .into()
+        }
+        None => Element::from(space().height(METER_LABEL + 6.0 + METER_BAR)),
+    };
+
+    let mut info = Column::new()
+        .spacing(INFO_GAP)
+        .height(INFO_ROW * INFO_ROWS + INFO_GAP * (INFO_ROWS - 1.0));
+    if let Some(battery) = &state.battery {
+        let color = battery_shade(battery, state.pulse());
+        let mut value = Row::new()
+            .spacing(4)
+            .push(text(format!("{} %", battery.percent)).size(13).color(color));
+        if let Some((label, label_color)) = battery_label(battery) {
+            value = value
+                .push(text("·").size(13).color(DIM))
+                .push(text(label).size(13).color(label_color));
+        }
+        info = info.push(info_row(
+            battery_icon(battery, state.pulse()),
+            "Battery",
+            value.into(),
+        ));
+    }
+    if let Some(network) = state.network {
+        let (label, color) = match network {
+            Network::Online => ("Online", Color::WHITE),
+            Network::NoInternet => ("No internet", WARNING_COLOR),
+            Network::Offline => ("Offline", CRITICAL_COLOR),
+        };
+        info = info.push(info_row(
+            network_view(network),
+            "Network",
+            text(label).size(13).color(color).into(),
+        ));
+    }
+    if let Some(audio) = state.audio {
+        let label = if audio.silent() {
+            "Muted".to_owned()
+        } else {
+            format!("{} %", audio.volume)
+        };
+        info = info.push(info_row(
+            audio_view(audio),
+            "Audio",
+            text(label).size(13).color(Color::WHITE).into(),
+        ));
+    }
+
+    let armed = panel.armed();
+    let hint = match armed {
+        Some(Action::Poweroff) => "Click again to power off",
+        Some(Action::Logout) => "Click again to log out",
+        None => "",
+    };
+    let actions = row![
+        text(hint).size(11).color(WARNING_COLOR).width(Length::Fill),
+        action_button(&ICON_LOGOUT, Action::Logout, armed),
+        action_button(&ICON_POWER, Action::Poweroff, armed),
+    ]
+    .spacing(2)
+    .align_y(Alignment::Center);
+
+    let separator = container(space())
+        .width(Length::Fill)
+        .height(1)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into()),
+            ..Default::default()
+        });
+
+    container(column![meters, info, separator, actions].spacing(PANEL_GAP))
+        .padding(PANEL_PADDING)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(CALENDAR_BACKGROUND.into()),
+            border: Border::default().rounded(14.0),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Dim icon, name and "12 %" over a thin bar; orange from `METER_WARNING`.
+fn meter(icon: &svg::Handle, name: &'static str, percent: u8) -> Element<'static, Message> {
+    let percent = percent.min(100);
+    let color = if percent >= METER_WARNING {
+        WARNING_COLOR
+    } else {
+        Color::WHITE
+    };
+    let label = row![
+        tinted(icon, DIM),
+        text(name).size(13).color(Color::WHITE).width(Length::Fill),
+        text(format!("{percent} %")).size(13).color(color),
+    ]
+    .spacing(8)
+    .height(METER_LABEL)
+    .align_y(Alignment::Center);
+
+    let filled = container(space())
+        .width(Length::FillPortion(u16::from(percent)))
+        .height(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(color.into()),
+            ..Default::default()
+        });
+    let bar = container(row![
+        filled,
+        space().width(Length::FillPortion(u16::from(100 - percent)))
+    ])
+    .width(Length::Fill)
+    .height(METER_BAR)
+    .style(|_| container::Style {
+        background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.14).into()),
+        border: Border::default().rounded(METER_BAR / 2.0),
+        ..Default::default()
+    });
+
+    column![label, bar].spacing(6).width(Length::Fill).into()
+}
+
+/// Icon, name and value aligned to the right.
+fn info_row(
+    icon: Element<'static, Message>,
+    name: &'static str,
+    value: Element<'static, Message>,
+) -> Element<'static, Message> {
+    row![
+        container(icon).center_x(24),
+        text(name).size(13).color(Color::WHITE).width(Length::Fill),
+        value,
+    ]
+    .spacing(8)
+    .height(INFO_ROW)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Battery state in words, with the charging color; nothing when unknown.
+fn battery_label(battery: &Battery) -> Option<(&'static str, Color)> {
+    match battery.status {
+        BatteryStatus::Charging => Some(("charging", CHARGING_COLOR)),
+        BatteryStatus::Discharging => Some(("on battery", DIM)),
+        BatteryStatus::Full => Some(("full", DIM)),
+        BatteryStatus::NotCharging => Some(("plugged in", DIM)),
+        BatteryStatus::Unknown => None,
+    }
+}
+
+/// 44×44 icon button; orange while armed. Leaving it with the cursor disarms.
+fn action_button(
+    icon: &svg::Handle,
+    action: Action,
+    armed: Option<Action>,
+) -> Element<'static, Message> {
+    let armed = armed == Some(action);
+    let color = if armed { WARNING_COLOR } else { Color::WHITE };
+    let glyph = svg(icon.clone())
+        .width(ACTION_ICON)
+        .height(ACTION_ICON)
+        .style(move |_, _| svg::Style { color: Some(color) });
+    let button = button(container(glyph).center(Length::Fill))
+        .on_press(Message::Press(action))
+        .width(ACTION_BUTTON)
+        .height(ACTION_BUTTON)
+        .padding(0)
+        .style(move |theme, status| {
+            if armed {
+                button::Style {
+                    background: Some(fade(WARNING_COLOR, 0.18).into()),
+                    border: Border::default().rounded(10.0),
+                    ..Default::default()
+                }
+            } else {
+                button::Style {
+                    border: Border::default().rounded(10.0),
+                    ..flat_button(theme, status)
+                }
+            }
+        });
+    mouse_area(button).on_exit(Message::Disarm).into()
+}
+
 fn cell(content: Element<'static, Message>) -> Element<'static, Message> {
     container(content).center(CELL).into()
 }
@@ -423,6 +652,13 @@ mod tests {
         assert_eq!(battery_color(&battery(5, Charging)), CHARGING_COLOR);
         assert_eq!(battery_color(&battery(50, Full)), Color::WHITE);
         assert_eq!(battery_color(&battery(5, Discharging)), CRITICAL_COLOR);
+    }
+
+    #[test]
+    fn panel_size_fits_its_sections() {
+        let (width, height) = panel_size();
+        assert_eq!(width, 300);
+        assert_eq!(height, 28 + 28 + 80 + 1 + 44 + 42);
     }
 
     #[test]

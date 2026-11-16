@@ -1,7 +1,7 @@
-//! Daemon state: visibility, notices, calendar and pulse.
+//! Daemon state: visibility, notices, calendar, status panel and pulse.
 //!
 //! Knows nothing about iced or windows: it receives `Input` from the shell and exposes queries
-//! (`strip_wanted`, `calendar_wanted`, `active_notices`, ...) so that each
+//! (`strip_wanted`, `calendar_wanted`, `panel_wanted`, `active_notices`, ...) so that each
 //! platform decides how to present them.
 
 use std::time::{Duration, Instant};
@@ -31,6 +31,10 @@ const BATTERY_CRITICAL: u8 = 10;
 /// Low-battery pulse: opacity drops to `1 - PULSE_DIM` and back, every `PULSE_PERIOD`.
 const PULSE_PERIOD: Duration = Duration::from_secs(2);
 const PULSE_DIM: f32 = 0.7;
+/// How long an armed session action waits for the confirming click (ADR-0005 Q2).
+// The panel is Linux-only for now (ADR-0005 Q4).
+#[cfg_attr(windows, allow(dead_code))]
+const ARM_DURATION: Duration = Duration::from_secs(3);
 
 /// What reaches the daemon from outside the shell: commands and source events.
 #[derive(Debug, Clone)]
@@ -96,6 +100,30 @@ pub(crate) struct Calendar {
     pub(crate) focused: bool,
 }
 
+/// Session actions of the status panel. Running them is up to the platform; the state only arms them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Action {
+    Logout,
+    Poweroff,
+}
+
+/// Open status panel (ADR-0005).
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) struct Panel {
+    /// `status` was already pinned when opening: closing the panel keeps it pinned.
+    status_was_pinned: bool,
+    /// Has received focus at least once; only then does losing it close the panel.
+    focused: bool,
+    /// Action waiting for its confirming click, and until when.
+    armed: Option<(Action, Instant)>,
+}
+
+impl Panel {
+    pub(crate) fn armed(&self) -> Option<Action> {
+        self.armed.map(|(action, _)| action)
+    }
+}
+
 pub(crate) struct Hidebar {
     visibility: [Visibility; 3],
     /// Expiry of each momentary notice, indexed by `Notice`.
@@ -107,6 +135,7 @@ pub(crate) struct Hidebar {
     pub(crate) network: Option<Network>,
     pub(crate) audio: Option<Audio>,
     pub(crate) calendar: Option<Calendar>,
+    pub(crate) panel: Option<Panel>,
     /// Low-battery pulse origin and last frame.
     pulse_origin: Instant,
     frame: Instant,
@@ -131,6 +160,7 @@ impl Hidebar {
             network: None,
             audio: None,
             calendar: None,
+            panel: None,
             pulse_origin: Instant::now(),
             frame: Instant::now(),
             now: now(),
@@ -180,6 +210,10 @@ impl Hidebar {
         if module == Module::Clock {
             return self.toggle_calendar();
         }
+        // ADR-0005 Q4: the panel surface exists on Linux only for now; Windows keeps pinning.
+        if module == Module::Status && cfg!(target_os = "linux") {
+            return self.toggle_panel();
+        }
         let next = match self.visibility(module) {
             Visibility::Pinned => Visibility::Hidden,
             _ if self.available(module) => Visibility::Pinned,
@@ -195,6 +229,7 @@ impl Hidebar {
             .any(|module| self.visibility(*module) == Visibility::Pinned);
         if any_pinned {
             self.calendar = None;
+            self.panel = None;
             for module in MODULES {
                 if self.visibility(module) == Visibility::Pinned {
                     self.set_visibility(module, Visibility::Hidden);
@@ -258,7 +293,63 @@ impl Hidebar {
         }
     }
 
+    fn toggle_panel(&mut self) {
+        if self.panel.is_some() {
+            return self.close_panel();
+        }
+        self.panel = Some(Panel {
+            status_was_pinned: self.visibility(Module::Status) == Visibility::Pinned,
+            focused: false,
+            armed: None,
+        });
+        if self.available(Module::Status) {
+            self.set_visibility(Module::Status, Visibility::Pinned);
+        }
+    }
+
+    pub(crate) fn close_panel(&mut self) {
+        if let Some(panel) = self.panel.take()
+            && !panel.status_was_pinned
+        {
+            self.set_visibility(Module::Status, Visibility::Hidden);
+        }
+    }
+
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn mark_panel_focused(&mut self, focused: bool) {
+        if focused {
+            if let Some(panel) = &mut self.panel {
+                panel.focused = true;
+            }
+        } else if self.panel.as_ref().is_some_and(|panel| panel.focused) {
+            self.close_panel();
+        }
+    }
+
+    /// First click arms `action`; a second click on the same action while armed confirms it: the panel
+    /// closes and the action is returned for the platform to run.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn press(&mut self, action: Action, instant: Instant) -> Option<Action> {
+        let panel = self.panel.as_mut()?;
+        if matches!(panel.armed, Some((armed, until)) if armed == action && instant < until) {
+            self.close_panel();
+            return Some(action);
+        }
+        panel.armed = Some((action, instant + ARM_DURATION));
+        None
+    }
+
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn disarm(&mut self) {
+        if let Some(panel) = &mut self.panel {
+            panel.armed = None;
+        }
+    }
+
     fn expire(&mut self, instant: Instant) {
+        if let Some(panel) = &mut self.panel {
+            panel.armed.take_if(|(_, until)| *until <= instant);
+        }
         for visibility in &mut self.visibility {
             if matches!(visibility, Visibility::Until(until) if *until <= instant) {
                 *visibility = Visibility::Hidden;
@@ -323,12 +414,21 @@ impl Hidebar {
         self.calendar.is_some()
     }
 
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn panel_wanted(&self) -> bool {
+        self.panel.is_some()
+    }
+
     /// Something has an expiry (momentary module or notice); the shell must keep checking the time.
     pub(crate) fn momentary(&self) -> bool {
         self.visibility
             .iter()
             .any(|visibility| matches!(visibility, Visibility::Until(_)))
             || self.notices.iter().any(Option::is_some)
+            || self
+                .panel
+                .as_ref()
+                .is_some_and(|panel| panel.armed.is_some())
     }
 
     pub(crate) fn handle(&mut self, input: Input) {
@@ -728,5 +828,76 @@ mod tests {
         state.mark_calendar_focused(true);
         state.mark_calendar_focused(false);
         assert!(state.calendar.is_none());
+    }
+
+    #[test]
+    fn toggle_status_opens_and_closes_panel() {
+        let mut state = ready();
+        apply(&mut state, toggle(Target::Status));
+        assert!(state.panel_wanted());
+        assert_eq!(state.visibility(Module::Status), Visibility::Pinned);
+        apply(&mut state, toggle(Target::Status));
+        assert!(!state.panel_wanted() && !state.visible(Module::Status));
+    }
+
+    #[test]
+    fn panel_respects_previously_pinned_status() {
+        let mut state = ready();
+        apply(&mut state, toggle(Target::All));
+        apply(&mut state, toggle(Target::Status));
+        state.close_panel();
+        assert_eq!(state.visibility(Module::Status), Visibility::Pinned);
+        apply(&mut state, toggle(Target::Status));
+        apply(&mut state, toggle(Target::All));
+        assert!(
+            !state.panel_wanted(),
+            "toggle all unpins and closes the panel"
+        );
+    }
+
+    #[test]
+    fn panel_closes_on_focus_loss_only_after_focus() {
+        let mut state = ready();
+        apply(&mut state, toggle(Target::Status));
+        state.mark_panel_focused(false);
+        assert!(state.panel_wanted(), "never focused: stays open");
+        state.mark_panel_focused(true);
+        state.mark_panel_focused(false);
+        assert!(!state.panel_wanted());
+    }
+
+    #[test]
+    fn session_actions_need_a_second_press_in_time() {
+        let mut state = ready();
+        let start = Instant::now();
+        assert_eq!(state.press(Action::Poweroff, start), None, "panel closed");
+
+        apply(&mut state, toggle(Target::Status));
+        assert_eq!(
+            state.press(Action::Poweroff, start),
+            None,
+            "first press arms"
+        );
+        assert!(state.momentary(), "the arm expiry needs ticks");
+        assert_eq!(
+            state.press(Action::Logout, start),
+            None,
+            "another action re-arms"
+        );
+        assert_eq!(state.panel.as_ref().unwrap().armed(), Some(Action::Logout));
+        assert_eq!(state.press(Action::Logout, start), Some(Action::Logout));
+        assert!(!state.panel_wanted(), "confirming closes the panel");
+
+        apply(&mut state, toggle(Target::Status));
+        state.press(Action::Poweroff, start);
+        state.disarm();
+        assert_eq!(state.press(Action::Poweroff, start), None, "disarmed");
+        state.expire(start + ARM_DURATION);
+        assert_eq!(state.panel.as_ref().unwrap().armed(), None, "expired");
+        assert_eq!(
+            state.press(Action::Poweroff, start + ARM_DURATION),
+            None,
+            "late press arms again"
+        );
     }
 }

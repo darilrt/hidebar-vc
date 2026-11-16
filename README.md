@@ -57,7 +57,21 @@ everything.
 `hidebar toggle clock` opens the current month under the clock, with today highlighted. `‹` `›` or the ←/→ arrow
 keys change month; clicking the title or pressing `Home` goes back to the current month. Close it with `Esc`,
 another `toggle clock`, or by clicking another window. It is the only part of the overlay that takes cursor and
-keyboard input.
+keyboard input, together with the status panel.
+
+### Status panel (Linux)
+
+`hidebar toggle status` opens a panel under the `status` pill: CPU and RAM with usage bars, battery, network and
+audio, plus **Log out** and **Power off** buttons. Both actions need a second click within 3 s: the first one
+turns the button orange and shows "Click again…"; moving the cursor away, `Esc` or waiting disarms it. Close the
+panel with `Esc`, another `toggle status`, or by clicking another window. While it is open the `status` pill stays
+pinned.
+
+- Power off runs `systemctl poweroff`.
+- Log out asks the compositor to quit: `hyprctl dispatch exit` (Hyprland) or
+  `niri msg action quit --skip-confirmation` (Niri).
+
+On Windows `toggle status` still pins the pill; the panel comes later.
 
 The interface (dates, CLI messages) is in English.
 
@@ -126,8 +140,9 @@ visible for debugging. The daemon logs to `%LOCALAPPDATA%\hidebar\hidebar.log` (
 hidebar daemon             start the daemon
 hidebar show <module>      show the module for a few seconds
 hidebar toggle <module>    depends on the module:
-                             workspaces, status → pin / unpin (stays visible until the next toggle)
-                             clock              → open / close the calendar
+                             workspaces → pin / unpin (stays visible until the next toggle)
+                             clock      → open / close the calendar
+                             status     → open / close the status panel (Linux; pin / unpin on Windows)
 hidebar show all           all three modules for a few seconds
 hidebar toggle all         if anything is pinned, unpin everything; otherwise pin all three
 hidebar quit               stop the daemon
@@ -189,7 +204,7 @@ exec-once = $hidebar daemon
 bind = CTRL SHIFT, T, exec, $hidebar show clock
 bind = CTRL SHIFT ALT, T, exec, $hidebar toggle clock         # calendar
 bind = CTRL SHIFT, B, exec, $hidebar show status
-bind = CTRL SHIFT ALT, B, exec, $hidebar toggle status        # pin network/cpu/ram/battery
+bind = CTRL SHIFT ALT, B, exec, $hidebar toggle status        # status panel
 bind = CTRL SHIFT, W, exec, $hidebar show workspaces          # optional: they appear on their own when switching
 bind = CTRL SHIFT ALT, W, exec, $hidebar toggle workspaces
 bind = CTRL SHIFT, A, exec, $hidebar show all
@@ -275,11 +290,12 @@ src/main.rs                 CLI and platform dispatch
 src/command.rs              command parsing and formatting
 src/state.rs                platform-independent state machine and tests
 src/ui/mod.rs               Surface/Message and shared view entry point
-src/ui/view.rs              pills, notices and calendar drawing
+src/ui/view.rs              pills, notices, calendar and status panel drawing
 src/calendar.rs             Spanish dates and month grid
 src/event.rs                events emitted by the sources
 src/platform/mod.rs         Linux/Windows selection
 src/platform/linux/         layer-shell shell + Hyprland/Niri/proc/pactl sources
+  session.rs                log out / power off from the status panel
 src/platform/windows/       Win32 layered shell + native sources
   render.rs                 iced tiny-skia -> Pixmap -> DIB -> UpdateLayeredWindow
   mod.rs                    message loop, timers, hotkeys, calendar input
