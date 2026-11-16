@@ -34,6 +34,8 @@ The pill stretches out leftwards from the screen edge and then the icon slides i
 fades and the pill folds back to the right.
 Module pills (`workspaces`, `clock`, `status`) appear and disappear the same way, each one growing from its side
 of the screen (the clock from the center).
+The calendar (`toggle clock`) and the status panel (`toggle status`) open the same way, stretching down from
+below their pill before their content fades in, and fold back up when they close.
 
 - **Network:** the network icon, when connectivity changes.
 - **Audio:** a crossed-out speaker when the output goes silent, a regular speaker when sound comes back.

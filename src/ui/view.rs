@@ -61,6 +61,7 @@ const CALENDAR_PADDING: f32 = 12.0;
 const CALENDAR_HEADER: f32 = 28.0;
 pub(crate) const CALENDAR_GAP: i32 = 4;
 const CALENDAR_BACKGROUND: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.8);
+const CALENDAR_RADIUS: f32 = 14.0;
 
 /// Status panel (ADR-0005): width, padding, gap between sections and the heights of each section.
 const PANEL_WIDTH: f32 = 300.0;
@@ -325,10 +326,6 @@ fn metric(icon: &svg::Handle, percent: u8, alpha: f32) -> Element<'static, Messa
     .into()
 }
 
-fn tinted(icon: &svg::Handle, color: Color) -> Element<'static, Message> {
-    faded(icon, color, 1.0)
-}
-
 /// Tinted icon at opacity `alpha`. The renderers ignore the tint's alpha, so it goes through `opacity`.
 fn faded(icon: &svg::Handle, color: Color, alpha: f32) -> Element<'static, Message> {
     svg(icon.clone())
@@ -423,18 +420,23 @@ fn battery_icon(battery: &Battery, pulse: f32, alpha: f32) -> Element<'static, M
     row![body, nub].align_y(Alignment::Center).into()
 }
 
-/// ‹ month year ›, Mo–Su headers and the grid; today highlighted.
+/// Calendar panel (ADR-0006): stretches down from a rounded bar below the clock, then its content fades in;
+/// it closes the other way round.
 fn calendar_view(state: &Hidebar) -> Element<'static, Message> {
-    let Some(open) = &state.calendar else {
+    let Some((month, frame)) = state.calendar_frame() else {
         return space().into();
     };
-    let month = open.month;
+    if frame.reveal == 0.0 {
+        return unfolding(frame, calendar_size().1);
+    }
+    let alpha = frame.reveal;
     let today = state.now.today;
     let is_current_month = today.year() == month.year() && today.month() == month.month();
 
     let title = button(
         text(calendar::month_title(month))
             .size(13)
+            .color(fade(Color::WHITE, alpha))
             .width(Length::Fill)
             .center(),
     )
@@ -442,9 +444,9 @@ fn calendar_view(state: &Hidebar) -> Element<'static, Message> {
     .width(Length::Fill)
     .style(flat_button);
     let header = row![
-        nav_button("‹", Message::Month(-1)),
+        nav_button("‹", Message::Month(-1), alpha),
         title,
-        nav_button("›", Message::Month(1)),
+        nav_button("›", Message::Month(1), alpha),
     ]
     .height(CALENDAR_HEADER)
     .align_y(Alignment::Center);
@@ -452,14 +454,23 @@ fn calendar_view(state: &Hidebar) -> Element<'static, Message> {
     let weekdays = Row::with_children(
         WEEKDAYS_SHORT
             .iter()
-            .map(|day| cell(text(*day).size(11).color(DIM).into())),
+            .map(|day| cell(text(*day).size(11).color(fade(DIM, alpha)).into())),
     );
 
     let weeks = calendar::month_grid(month).map(|week| {
-        Row::with_children(week.iter().map(|day| match day {
-            Some(day) if is_current_month && *day == today.day() => cell(today_mark(*day)),
-            Some(day) => cell(text(day.to_string()).size(12).color(Color::WHITE).into()),
-            None => cell(space().into()),
+        Row::with_children(week.iter().map(|day| {
+            match day {
+                Some(day) if is_current_month && *day == today.day() => {
+                    cell(today_mark(*day, alpha))
+                }
+                Some(day) => cell(
+                    text(day.to_string())
+                        .size(12)
+                        .color(fade(Color::WHITE, alpha))
+                        .into(),
+                ),
+                None => cell(space().into()),
+            }
         }))
         .into()
     });
@@ -468,26 +479,48 @@ fn calendar_view(state: &Hidebar) -> Element<'static, Message> {
         .padding(CALENDAR_PADDING)
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(CALENDAR_BACKGROUND.into()),
-            border: Border::default().rounded(14.0),
-            ..Default::default()
-        })
+        .style(panel_style(frame))
         .into()
+}
+
+/// Calendar or status panel while it stretches down or folds back up: just its background, `size` of its full
+/// height (at least a rounded bar), since the content only shows once fully stretched.
+fn unfolding(frame: Frame, full_height: u32) -> Element<'static, Message> {
+    let height = (full_height as f32 * frame.size).max(2.0 * CALENDAR_RADIUS);
+    let bar = container(space())
+        .width(Length::Fill)
+        .height(height)
+        .style(panel_style(frame));
+    container(bar).align_top(Length::Fill).into()
+}
+
+/// Rounded dark background of the calendar and the status panel, at the opacity of `frame`.
+fn panel_style(frame: Frame) -> impl Fn(&iced::Theme) -> container::Style {
+    let background = fade(CALENDAR_BACKGROUND, frame.background);
+    move |_| container::Style {
+        background: Some(background.into()),
+        border: Border::default().rounded(CALENDAR_RADIUS),
+        ..Default::default()
+    }
 }
 
 /// Status panel: CPU/RAM meters, battery, network and audio rows, and the session actions.
 fn panel_view(state: &Hidebar) -> Element<'static, Message> {
-    let Some(panel) = &state.panel else {
+    let Some(frame) = state.panel_frame() else {
         return space().into();
     };
+    if frame.reveal == 0.0 {
+        return unfolding(frame, panel_size().1);
+    }
+    let alpha = frame.reveal;
 
     let meters = match state.system {
-        Some(System { cpu, ram }) => {
-            row![meter(&ICON_CPU, "CPU", cpu), meter(&ICON_RAM, "RAM", ram)]
-                .spacing(PANEL_GAP)
-                .into()
-        }
+        Some(System { cpu, ram }) => row![
+            meter(&ICON_CPU, "CPU", cpu, alpha),
+            meter(&ICON_RAM, "RAM", ram, alpha)
+        ]
+        .spacing(PANEL_GAP)
+        .into(),
         None => Element::from(space().height(METER_LABEL + 6.0 + METER_BAR)),
     };
 
@@ -496,18 +529,21 @@ fn panel_view(state: &Hidebar) -> Element<'static, Message> {
         .height(INFO_ROW * INFO_ROWS + INFO_GAP * (INFO_ROWS - 1.0));
     if let Some(battery) = &state.battery {
         let color = battery_shade(battery, state.pulse());
-        let mut value = Row::new()
-            .spacing(4)
-            .push(text(format!("{} %", battery.percent)).size(13).color(color));
+        let mut value = Row::new().spacing(4).push(
+            text(format!("{} %", battery.percent))
+                .size(13)
+                .color(fade(color, alpha)),
+        );
         if let Some((label, label_color)) = battery_label(battery) {
             value = value
-                .push(text("·").size(13).color(DIM))
-                .push(text(label).size(13).color(label_color));
+                .push(text("·").size(13).color(fade(DIM, alpha)))
+                .push(text(label).size(13).color(fade(label_color, alpha)));
         }
         info = info.push(info_row(
-            battery_icon(battery, state.pulse(), 1.0),
+            battery_icon(battery, state.pulse(), alpha),
             "Battery",
             value.into(),
+            alpha,
         ));
     }
     if let Some(network) = state.network {
@@ -517,9 +553,10 @@ fn panel_view(state: &Hidebar) -> Element<'static, Message> {
             Network::Offline => ("Offline", CRITICAL_COLOR),
         };
         info = info.push(info_row(
-            network_view(network, 1.0),
+            network_view(network, alpha),
             "Network",
-            text(label).size(13).color(color).into(),
+            text(label).size(13).color(fade(color, alpha)).into(),
+            alpha,
         ));
     }
     if let Some(audio) = state.audio {
@@ -529,22 +566,27 @@ fn panel_view(state: &Hidebar) -> Element<'static, Message> {
             format!("{} %", audio.volume)
         };
         info = info.push(info_row(
-            audio_view(audio, 1.0),
+            audio_view(audio, alpha),
             "Audio",
-            text(label).size(13).color(Color::WHITE).into(),
+            text(label).size(13).color(fade(Color::WHITE, alpha)).into(),
+            alpha,
         ));
     }
 
-    let armed = panel.armed();
+    // While folding back after closing there is no panel left to arm.
+    let armed = state.panel.as_ref().and_then(|panel| panel.armed());
     let hint = match armed {
         Some(Action::Poweroff) => "Click again to power off",
         Some(Action::Logout) => "Click again to log out",
         None => "",
     };
     let actions = row![
-        text(hint).size(11).color(WARNING_COLOR).width(Length::Fill),
-        action_button(&ICON_LOGOUT, Action::Logout, armed),
-        action_button(&ICON_POWER, Action::Poweroff, armed),
+        text(hint)
+            .size(11)
+            .color(fade(WARNING_COLOR, alpha))
+            .width(Length::Fill),
+        action_button(&ICON_LOGOUT, Action::Logout, armed, alpha),
+        action_button(&ICON_POWER, Action::Poweroff, armed, alpha),
     ]
     .spacing(2)
     .align_y(Alignment::Center);
@@ -552,8 +594,8 @@ fn panel_view(state: &Hidebar) -> Element<'static, Message> {
     let separator = container(space())
         .width(Length::Fill)
         .height(1)
-        .style(|_| container::Style {
-            background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into()),
+        .style(move |_| container::Style {
+            background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1 * alpha).into()),
             ..Default::default()
         });
 
@@ -561,25 +603,32 @@ fn panel_view(state: &Hidebar) -> Element<'static, Message> {
         .padding(PANEL_PADDING)
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(CALENDAR_BACKGROUND.into()),
-            border: Border::default().rounded(14.0),
-            ..Default::default()
-        })
+        .style(panel_style(frame))
         .into()
 }
 
 /// Dim icon, name and "12 %" over a thin bar; orange from `METER_WARNING`.
-fn meter(icon: &svg::Handle, name: &'static str, percent: u8) -> Element<'static, Message> {
+fn meter(
+    icon: &svg::Handle,
+    name: &'static str,
+    percent: u8,
+    alpha: f32,
+) -> Element<'static, Message> {
     let percent = percent.min(100);
-    let color = if percent >= METER_WARNING {
-        WARNING_COLOR
-    } else {
-        Color::WHITE
-    };
+    let color = fade(
+        if percent >= METER_WARNING {
+            WARNING_COLOR
+        } else {
+            Color::WHITE
+        },
+        alpha,
+    );
     let label = row![
-        tinted(icon, DIM),
-        text(name).size(13).color(Color::WHITE).width(Length::Fill),
+        faded(icon, DIM, alpha),
+        text(name)
+            .size(13)
+            .color(fade(Color::WHITE, alpha))
+            .width(Length::Fill),
         text(format!("{percent} %")).size(13).color(color),
     ]
     .spacing(8)
@@ -599,8 +648,8 @@ fn meter(icon: &svg::Handle, name: &'static str, percent: u8) -> Element<'static
     ])
     .width(Length::Fill)
     .height(METER_BAR)
-    .style(|_| container::Style {
-        background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.14).into()),
+    .style(move |_| container::Style {
+        background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.14 * alpha).into()),
         border: Border::default().rounded(METER_BAR / 2.0),
         ..Default::default()
     });
@@ -613,10 +662,14 @@ fn info_row(
     icon: Element<'static, Message>,
     name: &'static str,
     value: Element<'static, Message>,
+    alpha: f32,
 ) -> Element<'static, Message> {
     row![
         container(icon).center_x(24),
-        text(name).size(13).color(Color::WHITE).width(Length::Fill),
+        text(name)
+            .size(13)
+            .color(fade(Color::WHITE, alpha))
+            .width(Length::Fill),
         value,
     ]
     .spacing(8)
@@ -641,12 +694,14 @@ fn action_button(
     icon: &svg::Handle,
     action: Action,
     armed: Option<Action>,
+    alpha: f32,
 ) -> Element<'static, Message> {
     let armed = armed == Some(action);
     let color = if armed { WARNING_COLOR } else { Color::WHITE };
     let glyph = svg(icon.clone())
         .width(ACTION_ICON)
         .height(ACTION_ICON)
+        .opacity(alpha)
         .style(move |_, _| svg::Style { color: Some(color) });
     let button = button(container(glyph).center(Length::Fill))
         .on_press(Message::Press(action))
@@ -675,23 +730,32 @@ fn cell(content: Element<'static, Message>) -> Element<'static, Message> {
 }
 
 /// Today: dark number on a white circle.
-fn today_mark(day: u32) -> Element<'static, Message> {
-    container(text(day.to_string()).size(12).color(Color::BLACK))
-        .center(CELL - 4.0)
-        .style(|_| container::Style {
-            background: Some(Color::WHITE.into()),
-            border: Border::default().rounded((CELL - 4.0) / 2.0),
-            ..Default::default()
-        })
-        .into()
+fn today_mark(day: u32, alpha: f32) -> Element<'static, Message> {
+    container(
+        text(day.to_string())
+            .size(12)
+            .color(fade(Color::BLACK, alpha)),
+    )
+    .center(CELL - 4.0)
+    .style(move |_| container::Style {
+        background: Some(fade(Color::WHITE, alpha).into()),
+        border: Border::default().rounded((CELL - 4.0) / 2.0),
+        ..Default::default()
+    })
+    .into()
 }
 
-fn nav_button(label: &'static str, message: Message) -> Element<'static, Message> {
-    button(text(label).size(16).center())
-        .on_press(message)
-        .width(CELL)
-        .style(flat_button)
-        .into()
+fn nav_button(label: &'static str, message: Message, alpha: f32) -> Element<'static, Message> {
+    button(
+        text(label)
+            .size(16)
+            .color(fade(Color::WHITE, alpha))
+            .center(),
+    )
+    .on_press(message)
+    .width(CELL)
+    .style(flat_button)
+    .into()
 }
 
 /// Button without background; a slight highlight on hover.

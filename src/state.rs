@@ -180,6 +180,17 @@ impl Motion {
     }
 }
 
+/// An entrance that started before its surface existed starts over from `instant`.
+#[cfg(target_os = "linux")]
+fn restart(slot: &mut Option<Motion>, instant: Instant) {
+    if let Some(motion) = slot
+        && !motion.leaving
+        && motion.since < instant
+    {
+        motion.since = instant;
+    }
+}
+
 /// Share of `duration` elapsed after `delay`, from 0 to 1.
 fn progress(elapsed: Duration, delay: Duration, duration: Duration) -> f32 {
     (elapsed.saturating_sub(delay).as_secs_f32() / duration.as_secs_f32()).min(1.0)
@@ -248,6 +259,12 @@ pub(crate) struct Hidebar {
     motions: [Option<Motion>; 3],
     /// Animation of each module pill, indexed by `Module`.
     module_motions: [Option<Motion>; 3],
+    /// Animation of the calendar panel: it stretches down from below the clock, then its content shows.
+    calendar_motion: Option<Motion>,
+    /// Month still drawn while the calendar folds back after closing.
+    closing_month: Option<NaiveDate>,
+    /// Animation of the status panel, like the calendar's.
+    panel_motion: Option<Motion>,
     /// Last known data; `None` until each source's first event.
     pub(crate) workspaces: Option<Workspaces>,
     pub(crate) battery: Option<Battery>,
@@ -276,6 +293,9 @@ impl Hidebar {
             notices: [None; 3],
             motions: [None; 3],
             module_motions: [None; 3],
+            calendar_motion: None,
+            closing_month: None,
+            panel_motion: None,
             workspaces: None,
             battery: None,
             system: None,
@@ -349,7 +369,9 @@ impl Hidebar {
             .iter()
             .any(|module| self.visibility(*module) == Visibility::Pinned);
         if any_pinned {
-            self.calendar = None;
+            if let Some(calendar) = self.calendar.take() {
+                self.closing_month = Some(calendar.month);
+            }
             self.panel = None;
             for module in MODULES {
                 if self.visibility(module) == Visibility::Pinned {
@@ -380,11 +402,14 @@ impl Hidebar {
     }
 
     pub(crate) fn close_calendar(&mut self) {
-        if let Some(calendar) = self.calendar.take()
-            && !calendar.clock_was_pinned
-        {
-            self.set_visibility(Module::Clock, Visibility::Hidden);
+        if let Some(calendar) = self.calendar.take() {
+            self.closing_month = Some(calendar.month);
+            if !calendar.clock_was_pinned {
+                self.set_visibility(Module::Clock, Visibility::Hidden);
+            }
         }
+        // Closing also comes from the view and from focus, outside `handle`: start folding back now.
+        self.settle();
     }
 
     pub(crate) fn shift_calendar(&mut self, delta: i32) {
@@ -434,6 +459,7 @@ impl Hidebar {
         {
             self.set_visibility(Module::Status, Visibility::Hidden);
         }
+        self.settle();
     }
 
     pub(crate) fn mark_panel_focused(&mut self, focused: bool) {
@@ -488,6 +514,21 @@ impl Hidebar {
 
     /// Starts, reverses or ends the notice animations so that they follow `active_notices`.
     fn animate(&mut self, instant: Instant) {
+        Motion::follow(
+            &mut self.calendar_motion,
+            self.calendar.is_some(),
+            instant,
+            instant,
+        );
+        if self.calendar_motion.is_none() {
+            self.closing_month = None;
+        }
+        Motion::follow(
+            &mut self.panel_motion,
+            self.panel.is_some(),
+            instant,
+            instant,
+        );
         for module in MODULES {
             let wanted = self.visible(module);
             Motion::follow(
@@ -512,6 +553,35 @@ impl Hidebar {
                 entering += 1;
             }
         }
+    }
+
+    /// Month shown by the calendar and how the panel is drawn now; `None` when it is not on screen.
+    pub(crate) fn calendar_frame(&self) -> Option<(NaiveDate, Frame)> {
+        let month = self
+            .calendar
+            .as_ref()
+            .map(|calendar| calendar.month)
+            .or(self.closing_month)?;
+        Some((month, self.calendar_motion?.frame(self.frame)))
+    }
+
+    /// How the status panel is drawn now; `None` when it is not on screen.
+    pub(crate) fn panel_frame(&self) -> Option<Frame> {
+        self.panel_motion.map(|motion| motion.frame(self.frame))
+    }
+
+    /// The calendar surface has just appeared (Linux): its entrance starts over from `instant`.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn calendar_opened(&mut self, instant: Instant) {
+        restart(&mut self.calendar_motion, instant);
+        self.frame = instant;
+    }
+
+    /// The status panel surface has just appeared (Linux): its entrance starts over from `instant`.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn panel_opened(&mut self, instant: Instant) {
+        restart(&mut self.panel_motion, instant);
+        self.frame = instant;
     }
 
     /// How a module pill is drawn now; `None` when it is not on screen.
@@ -577,6 +647,7 @@ impl Hidebar {
         self.motions
             .iter()
             .chain(&self.module_motions)
+            .chain([&self.calendar_motion, &self.panel_motion])
             .flatten()
             .any(|motion| motion.leaving || !motion.done(self.frame))
     }
@@ -629,12 +700,14 @@ impl Hidebar {
                 .any(Option::is_some)
     }
 
+    /// Open, or folding back after closing.
     pub(crate) fn calendar_wanted(&self) -> bool {
-        self.calendar.is_some()
+        self.calendar.is_some() || self.calendar_motion.is_some()
     }
 
+    /// Open, or folding back after closing.
     pub(crate) fn panel_wanted(&self) -> bool {
-        self.panel.is_some()
+        self.panel.is_some() || self.panel_motion.is_some()
     }
 
     /// Something has an expiry (momentary module or notice); the shell must keep checking the time.
@@ -666,6 +739,11 @@ impl Hidebar {
             }
             Input::Event(event) => self.on_event(event),
         }
+        self.settle();
+    }
+
+    /// Brings the animations up to date after a change outside the frame clock.
+    fn settle(&mut self) {
         let instant = Instant::now();
         self.frame = instant;
         self.animate(instant);
@@ -1035,8 +1113,96 @@ mod tests {
             calendar::first_of_month(state.now.today)
         );
         apply(&mut state, toggle(Target::Clock));
-        assert!(state.calendar.is_none() && !state.calendar_wanted());
+        assert!(
+            state.calendar.is_none() && state.calendar_wanted(),
+            "folding back"
+        );
         assert!(!state.visible(Module::Clock), "the clock hides again");
+        state.tick(state.frame + Duration::from_secs(1));
+        assert!(!state.calendar_wanted());
+    }
+
+    #[test]
+    fn calendar_stretches_down_then_folds_back() {
+        let mut state = ready();
+        apply(&mut state, toggle(Target::Clock));
+        let start = state.frame;
+        let at = |state: &mut Hidebar, ms| {
+            state.tick(start + Duration::from_millis(ms));
+            state.calendar_frame().map(|(_, frame)| frame)
+        };
+        let frame = at(&mut state, 0).unwrap();
+        assert_eq!((frame.size, frame.reveal), (0.0, 0.0));
+        let frame = at(&mut state, 250).unwrap();
+        assert!(frame.size > 0.9 && frame.reveal == 0.0, "stretch first");
+        let frame = at(&mut state, 480).unwrap();
+        assert_eq!((frame.size, frame.reveal), (1.0, 1.0));
+        assert!(!state.animating());
+
+        let month = state.calendar.as_ref().unwrap().month;
+        state.close_calendar();
+        let close = state.frame;
+        let (shown, frame) = state.calendar_frame().unwrap();
+        assert_eq!((shown, frame.size), (month, 1.0), "leaving starts full");
+        assert!(state.calendar_wanted() && state.animating());
+        state.tick(close + Duration::from_millis(320));
+        assert!(state.calendar_frame().is_none() && !state.calendar_wanted());
+    }
+
+    #[test]
+    fn toggle_all_folds_the_calendar_back() {
+        let mut state = ready();
+        apply(&mut state, toggle(Target::Clock));
+        apply(&mut state, toggle(Target::All));
+        assert!(state.calendar.is_none() && state.calendar_frame().is_some());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn calendar_waits_for_its_surface() {
+        let mut state = ready();
+        apply(&mut state, toggle(Target::Clock));
+        let opened = state.frame + Duration::from_millis(250);
+        state.calendar_opened(opened);
+        assert_eq!(state.calendar_frame().unwrap().1.size, 0.0);
+    }
+
+    #[test]
+    fn panel_stretches_down_then_folds_back() {
+        let mut state = ready();
+        apply(&mut state, toggle(Target::Status));
+        let start = state.frame;
+        let at = |state: &mut Hidebar, ms| {
+            state.tick(start + Duration::from_millis(ms));
+            state.panel_frame()
+        };
+        let frame = at(&mut state, 0).unwrap();
+        assert_eq!((frame.size, frame.reveal), (0.0, 0.0));
+        let frame = at(&mut state, 250).unwrap();
+        assert!(frame.size > 0.9 && frame.reveal == 0.0, "stretch first");
+        let frame = at(&mut state, 480).unwrap();
+        assert_eq!((frame.size, frame.reveal), (1.0, 1.0));
+
+        state.close_panel();
+        let close = state.frame;
+        assert_eq!(
+            state.panel_frame().unwrap().size,
+            1.0,
+            "leaving starts full"
+        );
+        assert!(state.panel.is_none() && state.panel_wanted() && state.animating());
+        state.tick(close + Duration::from_millis(320));
+        assert!(state.panel_frame().is_none() && !state.panel_wanted());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn panel_waits_for_its_surface() {
+        let mut state = ready();
+        apply(&mut state, toggle(Target::Status));
+        let opened = state.frame + Duration::from_millis(250);
+        state.panel_opened(opened);
+        assert_eq!(state.panel_frame().unwrap().size, 0.0);
     }
 
     #[test]
@@ -1063,10 +1229,10 @@ mod tests {
     fn toggle_status_opens_and_closes_panel() {
         let mut state = ready();
         apply(&mut state, toggle(Target::Status));
-        assert!(state.panel_wanted());
+        assert!(state.panel.is_some());
         assert_eq!(state.visibility(Module::Status), Visibility::Pinned);
         apply(&mut state, toggle(Target::Status));
-        assert!(!state.panel_wanted() && !state.visible(Module::Status));
+        assert!(state.panel.is_none() && !state.visible(Module::Status));
     }
 
     #[test]
@@ -1079,7 +1245,7 @@ mod tests {
         apply(&mut state, toggle(Target::Status));
         apply(&mut state, toggle(Target::All));
         assert!(
-            !state.panel_wanted(),
+            state.panel.is_none(),
             "toggle all unpins and closes the panel"
         );
     }
@@ -1089,10 +1255,10 @@ mod tests {
         let mut state = ready();
         apply(&mut state, toggle(Target::Status));
         state.mark_panel_focused(false);
-        assert!(state.panel_wanted(), "never focused: stays open");
+        assert!(state.panel.is_some(), "never focused: stays open");
         state.mark_panel_focused(true);
         state.mark_panel_focused(false);
-        assert!(!state.panel_wanted());
+        assert!(state.panel.is_none());
     }
 
     #[test]
@@ -1115,7 +1281,7 @@ mod tests {
         );
         assert_eq!(state.panel.as_ref().unwrap().armed(), Some(Action::Logout));
         assert_eq!(state.press(Action::Logout, start), Some(Action::Logout));
-        assert!(!state.panel_wanted(), "confirming closes the panel");
+        assert!(state.panel.is_none(), "confirming closes the panel");
 
         apply(&mut state, toggle(Target::Status));
         state.press(Action::Poweroff, start);

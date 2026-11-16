@@ -125,6 +125,12 @@ fn handle(shell: &mut Shell, message: Message) -> Task<Message> {
         Message::Frame => shell.state.frame(Instant::now()),
         // The strip surface takes a moment to appear: notices start animating once it is there.
         Message::Opened(id) if shell.strip == Some(id) => shell.state.strip_opened(Instant::now()),
+        Message::Opened(id) if shell.calendar_surface == Some(id) => {
+            shell.state.calendar_opened(Instant::now());
+        }
+        Message::Opened(id) if shell.panel_surface == Some(id) => {
+            shell.state.panel_opened(Instant::now());
+        }
         Message::Closed(id) => {
             // If the compositor closed a surface, `sync` reopens it if it is still needed.
             shell.strip.take_if(|strip| *strip == id);
