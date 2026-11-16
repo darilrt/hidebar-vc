@@ -12,7 +12,7 @@ use super::logging;
 use crate::command::{Command, Target};
 
 /// Ctrl+Alt+Win is not AltGr and does not clash with reopen tab, close window or
-/// bookmarks. Show uses letters; pin uses 1=clock, 2=status, 3=workspaces,
+/// bookmarks. Show uses letters; toggle uses 1=clock, 2=status, 3=workspaces,
 /// 4=all. There is no hotkey to quit: `hidebar quit`.
 const HOTKEYS: [(i32, u32, u16, Command); 8] = [
     (

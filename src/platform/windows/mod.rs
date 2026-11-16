@@ -12,6 +12,7 @@ mod ipc;
 mod logging;
 mod network;
 mod render;
+mod session;
 mod startup;
 mod system;
 mod win32;
@@ -42,18 +43,81 @@ use crate::ui;
 use geometry::WorkArea;
 use render::LayeredSurface;
 
+/// Interactive window (calendar or status panel): receives cursor, keyboard and focus while open.
+struct Interactive {
+    layer: LayeredSurface,
+    surface: ui::Surface,
+    visible: bool,
+    cursor: iced::mouse::Cursor,
+}
+
+impl Interactive {
+    fn new(layer: LayeredSurface, surface: ui::Surface) -> Self {
+        Self {
+            layer,
+            surface,
+            visible: false,
+            cursor: iced::mouse::Cursor::Unavailable,
+        }
+    }
+
+    fn window(&self) -> HWND {
+        self.layer.window()
+    }
+
+    fn wanted(&self, state: &Hidebar) -> bool {
+        match self.surface {
+            ui::Surface::Calendar => state.calendar_wanted(),
+            ui::Surface::Panel => state.panel_wanted(),
+            ui::Surface::Strip => false,
+        }
+    }
+
+    fn render(&mut self, state: &Hidebar) {
+        self.layer.render(state, self.surface, self.cursor);
+    }
+
+    fn sync(&mut self, state: &Hidebar) {
+        if self.wanted(state) {
+            self.render(state);
+            if !self.visible {
+                self.layer.show(true);
+                self.visible = true;
+            }
+        } else {
+            self.hide();
+        }
+    }
+
+    fn hide(&mut self) {
+        if self.visible {
+            self.layer.hide();
+            self.visible = false;
+        }
+        // A stale position would draw a hover the next time it opens.
+        self.cursor = iced::mouse::Cursor::Unavailable;
+    }
+
+    /// Runs `event` through the view and applies the resulting messages to the state.
+    fn dispatch(&mut self, state: &mut Hidebar, event: iced::Event) {
+        let messages = self.layer.update(state, self.surface, event, self.cursor);
+        for message in messages {
+            apply_ui(state, message);
+        }
+    }
+}
+
 struct Shell {
     state: Hidebar,
     area: WorkArea,
     strip: LayeredSurface,
-    calendar: LayeredSurface,
     strip_visible: bool,
-    calendar_visible: bool,
+    calendar: Interactive,
+    panel: Interactive,
     timer: Option<u32>,
     inputs: Receiver<Input>,
     fullscreen_rx: Receiver<bool>,
     fullscreen: bool,
-    cursor: iced::mouse::Cursor,
     hotkeys: Vec<i32>,
     quit: bool,
 }
@@ -61,13 +125,12 @@ struct Shell {
 impl Shell {
     fn new(
         area: WorkArea,
-        strip_hwnd: HWND,
-        calendar_hwnd: HWND,
+        windows: Windows,
         inputs: Receiver<Input>,
         fullscreen_rx: Receiver<bool>,
     ) -> Self {
         let strip = LayeredSurface::new(
-            strip_hwnd,
+            windows.strip,
             POINT {
                 x: area.left,
                 y: area.top,
@@ -79,21 +142,23 @@ impl Shell {
 
         let (x, y, width, height) = area.calendar_rect();
         let calendar =
-            LayeredSurface::new(calendar_hwnd, POINT { x, y }, width, height, area.scale);
+            LayeredSurface::new(windows.calendar, POINT { x, y }, width, height, area.scale);
+
+        let (x, y, width, height) = area.panel_rect();
+        let panel = LayeredSurface::new(windows.panel, POINT { x, y }, width, height, area.scale);
 
         Self {
             state: Hidebar::new(),
             area,
             strip,
-            calendar,
             strip_visible: false,
-            calendar_visible: false,
+            calendar: Interactive::new(calendar, ui::Surface::Calendar),
+            panel: Interactive::new(panel, ui::Surface::Panel),
             timer: None,
             inputs,
             fullscreen_rx,
             fullscreen: false,
-            cursor: iced::mouse::Cursor::Unavailable,
-            hotkeys: hotkeys::register(strip_hwnd),
+            hotkeys: hotkeys::register(windows.strip),
             quit: false,
         }
     }
@@ -104,10 +169,8 @@ impl Shell {
                 self.strip.hide();
                 self.strip_visible = false;
             }
-            if self.calendar_visible {
-                self.calendar.hide();
-                self.calendar_visible = false;
-            }
+            self.calendar.hide();
+            self.panel.hide();
             if self.timer.is_some() {
                 win32::set_timer(self.strip.window(), None);
                 self.timer = None;
@@ -131,18 +194,8 @@ impl Shell {
             self.strip_visible = false;
         }
 
-        let calendar = self.state.calendar_wanted();
-        if calendar {
-            self.calendar
-                .render(&self.state, ui::Surface::Calendar, self.cursor);
-            if !self.calendar_visible {
-                self.calendar.show(true);
-                self.calendar_visible = true;
-            }
-        } else if self.calendar_visible {
-            self.calendar.hide();
-            self.calendar_visible = false;
-        }
+        self.calendar.sync(&self.state);
+        self.panel.sync(&self.state);
 
         self.update_timer();
     }
@@ -174,6 +227,7 @@ impl Shell {
             self.fullscreen = active;
             if active {
                 self.state.close_calendar();
+                self.state.close_panel();
             }
         }
 
@@ -195,17 +249,47 @@ impl Shell {
         self.sync();
     }
 
-    fn on_mouse(&mut self, message: u32, lparam: LPARAM) {
-        if !self.calendar_visible {
+    /// The interactive window `hwnd` belongs to, together with the state it acts on.
+    fn target(&mut self, hwnd: HWND) -> Option<(&mut Hidebar, &mut Interactive)> {
+        let target = if hwnd == self.calendar.window() {
+            &mut self.calendar
+        } else if hwnd == self.panel.window() {
+            &mut self.panel
+        } else {
+            return None;
+        };
+        Some((&mut self.state, target))
+    }
+
+    /// After input on `hwnd`: repaint only that window while it stays open, otherwise resync everything.
+    fn after_input(&mut self, hwnd: HWND) {
+        let Some((state, target)) = self.target(hwnd) else {
+            return;
+        };
+        if target.wanted(state) {
+            target.render(state);
+            // Arming a session action needs ticks for its expiry.
+            self.update_timer();
+        } else {
+            self.sync();
+        }
+    }
+
+    fn on_mouse(&mut self, hwnd: HWND, message: u32, lparam: LPARAM) {
+        let scale = self.area.scale;
+        let Some((state, target)) = self.target(hwnd) else {
+            return;
+        };
+        if !target.visible {
             return;
         }
 
-        win32::track_mouse_leave(self.calendar.window());
+        win32::track_mouse_leave(hwnd);
         let position = iced::Point::new(
-            low_word(lparam) as f32 / self.area.scale,
-            high_word(lparam) as f32 / self.area.scale,
+            low_word(lparam) as f32 / scale,
+            high_word(lparam) as f32 / scale,
         );
-        self.cursor = iced::mouse::Cursor::Available(position);
+        target.cursor = iced::mouse::Cursor::Available(position);
 
         let event = match message {
             WM_MOUSEMOVE => iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }),
@@ -218,59 +302,60 @@ impl Shell {
             _ => return,
         };
 
-        let messages = self.calendar.update(&self.state, event, self.cursor);
-        for message in messages {
-            self.apply_ui(message);
-        }
+        target.dispatch(state, event);
+        self.after_input(hwnd);
+    }
 
-        // Hover/click only repaints the calendar; the strip does not change.
-        if self.state.calendar_wanted() {
-            self.calendar
-                .render(&self.state, ui::Surface::Calendar, self.cursor);
+    fn on_mouse_leave(&mut self, hwnd: HWND) {
+        let Some((state, target)) = self.target(hwnd) else {
+            return;
+        };
+        target.cursor = iced::mouse::Cursor::Unavailable;
+        if !target.visible {
+            return;
+        }
+        // Lets `mouse_area::on_exit` fire: leaving a session button disarms it.
+        target.dispatch(state, iced::Event::Mouse(iced::mouse::Event::CursorLeft));
+        self.after_input(hwnd);
+    }
+
+    fn on_key(&mut self, hwnd: HWND, key: u32) {
+        let message = if hwnd == self.calendar.window() {
+            match key {
+                k if k == VK_ESCAPE as u32 => ui::Message::Close,
+                k if k == VK_LEFT as u32 => ui::Message::Month(-1),
+                k if k == VK_RIGHT as u32 => ui::Message::Month(1),
+                k if k == VK_HOME as u32 => ui::Message::Today,
+                _ => return,
+            }
+        } else if hwnd == self.panel.window() && key == VK_ESCAPE as u32 {
+            // Esc disarms an armed action, otherwise closes.
+            if self
+                .state
+                .panel
+                .as_ref()
+                .is_some_and(|panel| panel.armed().is_some())
+            {
+                ui::Message::Disarm
+            } else {
+                self.state.close_panel();
+                return self.sync();
+            }
         } else {
-            self.sync();
-        }
-    }
-
-    fn on_mouse_leave(&mut self) {
-        self.cursor = iced::mouse::Cursor::Unavailable;
-        if self.calendar_visible {
-            self.calendar
-                .render(&self.state, ui::Surface::Calendar, self.cursor);
-        }
-    }
-
-    fn on_key(&mut self, key: u32) {
-        let message = match key {
-            k if k == VK_ESCAPE as u32 => ui::Message::Close,
-            k if k == VK_LEFT as u32 => ui::Message::Month(-1),
-            k if k == VK_RIGHT as u32 => ui::Message::Month(1),
-            k if k == VK_HOME as u32 => ui::Message::Today,
-            _ => return,
+            return;
         };
 
-        self.apply_ui(message);
-        if self.state.calendar_wanted() {
-            self.calendar
-                .render(&self.state, ui::Surface::Calendar, self.cursor);
-        } else {
-            self.sync();
-        }
+        apply_ui(&mut self.state, message);
+        self.after_input(hwnd);
     }
 
-    fn on_focus(&mut self, focused: bool) {
-        self.state.mark_calendar_focused(focused);
+    fn on_focus(&mut self, hwnd: HWND, focused: bool) {
+        if hwnd == self.calendar.window() {
+            self.state.mark_calendar_focused(focused);
+        } else if hwnd == self.panel.window() {
+            self.state.mark_panel_focused(focused);
+        }
         self.sync();
-    }
-
-    fn apply_ui(&mut self, message: ui::Message) {
-        match message {
-            ui::Message::Month(delta) => self.state.shift_calendar(delta),
-            ui::Message::Today => self.state.calendar_today(),
-            ui::Message::Close => self.state.close_calendar(),
-            // The status panel is Linux-only for now (ADR-0005 Q4).
-            ui::Message::Press(_) | ui::Message::Disarm => {}
-        }
     }
 
     fn relayout(&mut self, dpi: Option<u32>) {
@@ -294,9 +379,19 @@ impl Shell {
 
         let (x, y, width, height) = self.area.calendar_rect();
         self.calendar
+            .layer
+            .move_resize(POINT { x, y }, width, height, self.area.scale);
+
+        let (x, y, width, height) = self.area.panel_rect();
+        self.panel
+            .layer
             .move_resize(POINT { x, y }, width, height, self.area.scale);
 
         self.sync();
+    }
+
+    fn interactive(&self, hwnd: HWND) -> bool {
+        hwnd == self.calendar.window() || hwnd == self.panel.window()
     }
 
     fn run(&mut self) {
@@ -308,22 +403,20 @@ impl Shell {
                 WM_TIMER if message.hwnd == self.strip.window() => self.on_timer(),
                 win32::WM_APP_EVENT => self.on_events(),
                 WM_HOTKEY => self.on_hotkey(message.wParam as i32),
-                WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP
-                    if message.hwnd == self.calendar.window() =>
-                {
-                    self.on_mouse(message.message, message.lParam);
+                WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP if self.interactive(message.hwnd) => {
+                    self.on_mouse(message.hwnd, message.message, message.lParam);
                 }
-                WM_KEYDOWN if message.hwnd == self.calendar.window() => {
-                    self.on_key(message.wParam as u32);
+                WM_KEYDOWN if self.interactive(message.hwnd) => {
+                    self.on_key(message.hwnd, message.wParam as u32);
                 }
                 // WM_SETFOCUS/KILLFOCUS and WM_DPICHANGED/DISPLAYCHANGE are sent,
                 // not posted: the WndProc forwards them as these messages.
-                win32::WM_APP_FOCUS => self.on_focus(message.wParam != 0),
+                win32::WM_APP_FOCUS => self.on_focus(message.hwnd, message.wParam != 0),
                 win32::WM_APP_RELAYOUT => {
                     self.relayout((message.wParam != 0).then_some(message.wParam as u32));
                 }
-                win32::WM_MOUSELEAVE if message.hwnd == self.calendar.window() => {
-                    self.on_mouse_leave();
+                win32::WM_MOUSELEAVE if self.interactive(message.hwnd) => {
+                    self.on_mouse_leave(message.hwnd);
                 }
                 // SAFETY: standard dispatch of messages the shell does not handle.
                 _ => unsafe {
@@ -339,6 +432,28 @@ impl Shell {
     }
 }
 
+/// Applies a view message to the state; confirmed session actions run here.
+fn apply_ui(state: &mut Hidebar, message: ui::Message) {
+    match message {
+        ui::Message::Month(delta) => state.shift_calendar(delta),
+        ui::Message::Today => state.calendar_today(),
+        ui::Message::Close => state.close_calendar(),
+        ui::Message::Press(action) => {
+            if let Some(action) = state.press(action, Instant::now()) {
+                session::run(action);
+            }
+        }
+        ui::Message::Disarm => state.disarm(),
+    }
+}
+
+/// The daemon's windows, created before the shell.
+struct Windows {
+    strip: HWND,
+    calendar: HWND,
+    panel: HWND,
+}
+
 pub(crate) fn run_daemon() -> ExitCode {
     win32::enable_dpi_awareness();
     logging::init();
@@ -347,8 +462,10 @@ pub(crate) fn run_daemon() -> ExitCode {
 
     let strip_class = win32::wide("hidebar_strip");
     let calendar_class = win32::wide("hidebar_calendar");
+    let panel_class = win32::wide("hidebar_panel");
     if !win32::register_class(&strip_class, Some(strip_proc))
-        || !win32::register_class(&calendar_class, Some(calendar_proc))
+        || !win32::register_class(&calendar_class, Some(interactive_proc))
+        || !win32::register_class(&panel_class, Some(interactive_proc))
     {
         logging::error(format!(
             "hidebar: could not register the window class: {}",
@@ -372,7 +489,18 @@ pub(crate) fn run_daemon() -> ExitCode {
     let calendar_hwnd = win32::create_window(
         &calendar_class,
         &title,
-        win32::CALENDAR_EX_STYLE,
+        win32::INTERACTIVE_EX_STYLE,
+        x,
+        y,
+        width,
+        height,
+    );
+
+    let (x, y, width, height) = area.panel_rect();
+    let panel_hwnd = win32::create_window(
+        &panel_class,
+        &title,
+        win32::INTERACTIVE_EX_STYLE,
         x,
         y,
         width,
@@ -394,7 +522,12 @@ pub(crate) fn run_daemon() -> ExitCode {
     let (fullscreen_tx, fullscreen_rx) = mpsc::channel();
     fullscreen::listen(fullscreen_tx, hwnd);
 
-    let mut shell = Shell::new(area, strip_hwnd, calendar_hwnd, receiver, fullscreen_rx);
+    let windows = Windows {
+        strip: strip_hwnd,
+        calendar: calendar_hwnd,
+        panel: panel_hwnd,
+    };
+    let mut shell = Shell::new(area, windows, receiver, fullscreen_rx);
     shell.sync();
     shell.run();
 
@@ -439,7 +572,7 @@ unsafe extern "system" fn strip_proc(
     unsafe { window_proc(true, hwnd, message, wparam, lparam) }
 }
 
-unsafe extern "system" fn calendar_proc(
+unsafe extern "system" fn interactive_proc(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,
@@ -448,7 +581,7 @@ unsafe extern "system" fn calendar_proc(
     unsafe { window_proc(false, hwnd, message, wparam, lparam) }
 }
 
-/// WndProc of both windows. It does not touch the `Shell`: the main loop handles
+/// WndProc of all windows. It does not touch the `Shell`: the main loop handles
 /// timers, input, IPC and hotkeys outside of system reentrancy.
 unsafe fn window_proc(
     is_strip: bool,

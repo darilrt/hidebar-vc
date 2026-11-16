@@ -36,6 +36,21 @@ impl WorkArea {
 
         (x, y, width, height)
     }
+
+    /// Top-left corner and physical size of the status panel, below the `status` pill
+    /// and aligned to its right edge.
+    pub(crate) fn panel_rect(&self) -> (i32, i32, u32, u32) {
+        let (logical_width, logical_height) = ui::panel_size();
+        let width = (logical_width as f32 * self.scale).round() as u32;
+        let height = (logical_height as f32 * self.scale).round() as u32;
+        let gap = (ui::CALENDAR_GAP as f32 * self.scale).round() as i32;
+        let side = (ui::PANEL_SIDE as f32 * self.scale).round() as i32;
+
+        let x = self.left + self.width as i32 - side - width as i32;
+        let y = self.top + self.strip_height() as i32 + gap;
+
+        (x, y, width, height)
+    }
 }
 
 pub(crate) fn primary() -> WorkArea {

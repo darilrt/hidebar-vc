@@ -120,10 +120,11 @@ impl LayeredSurface {
         self.present();
     }
 
-    /// Applies an event to the calendar and returns the view's messages.
+    /// Applies an event to an interactive surface and returns the view's messages.
     pub(crate) fn update(
         &mut self,
         state: &Hidebar,
+        surface: ui::Surface,
         event: iced::Event,
         cursor: mouse::Cursor,
     ) -> Vec<ui::Message> {
@@ -131,7 +132,7 @@ impl LayeredSurface {
             self.width as f32 / self.scale,
             self.height as f32 / self.scale,
         );
-        let view = ui::view(state, ui::Surface::Calendar);
+        let view = ui::view(state, surface);
         let mut interface = UserInterface::build(
             view,
             logical,

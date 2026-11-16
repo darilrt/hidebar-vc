@@ -32,8 +32,6 @@ const BATTERY_CRITICAL: u8 = 10;
 const PULSE_PERIOD: Duration = Duration::from_secs(2);
 const PULSE_DIM: f32 = 0.7;
 /// How long an armed session action waits for the confirming click (ADR-0005 Q2).
-// The panel is Linux-only for now (ADR-0005 Q4).
-#[cfg_attr(windows, allow(dead_code))]
 const ARM_DURATION: Duration = Duration::from_secs(3);
 
 /// What reaches the daemon from outside the shell: commands and source events.
@@ -108,7 +106,6 @@ pub(crate) enum Action {
 }
 
 /// Open status panel (ADR-0005).
-#[cfg_attr(windows, allow(dead_code))]
 pub(crate) struct Panel {
     /// `status` was already pinned when opening: closing the panel keeps it pinned.
     status_was_pinned: bool,
@@ -210,8 +207,7 @@ impl Hidebar {
         if module == Module::Clock {
             return self.toggle_calendar();
         }
-        // ADR-0005 Q4: the panel surface exists on Linux only for now; Windows keeps pinning.
-        if module == Module::Status && cfg!(target_os = "linux") {
+        if module == Module::Status {
             return self.toggle_panel();
         }
         let next = match self.visibility(module) {
@@ -315,7 +311,6 @@ impl Hidebar {
         }
     }
 
-    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn mark_panel_focused(&mut self, focused: bool) {
         if focused {
             if let Some(panel) = &mut self.panel {
@@ -328,7 +323,6 @@ impl Hidebar {
 
     /// First click arms `action`; a second click on the same action while armed confirms it: the panel
     /// closes and the action is returned for the platform to run.
-    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn press(&mut self, action: Action, instant: Instant) -> Option<Action> {
         let panel = self.panel.as_mut()?;
         if matches!(panel.armed, Some((armed, until)) if armed == action && instant < until) {
@@ -339,7 +333,6 @@ impl Hidebar {
         None
     }
 
-    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn disarm(&mut self) {
         if let Some(panel) = &mut self.panel {
             panel.armed = None;
@@ -414,7 +407,6 @@ impl Hidebar {
         self.calendar.is_some()
     }
 
-    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn panel_wanted(&self) -> bool {
         self.panel.is_some()
     }

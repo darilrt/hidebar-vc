@@ -16,7 +16,6 @@ pub(crate) enum Message {
     Today,
     Close,
     /// Session action button pressed: arms it, or confirms it if already armed.
-    #[cfg_attr(windows, allow(dead_code))]
     Press(Action),
     /// The cursor left a session action button.
     Disarm,
@@ -27,7 +26,6 @@ pub(crate) enum Message {
 pub(crate) enum Surface {
     Strip,
     Calendar,
-    #[cfg_attr(windows, allow(dead_code))]
     Panel,
 }
 
@@ -36,6 +34,4 @@ pub(crate) fn view(state: &Hidebar, surface: Surface) -> Element<'_, Message> {
 }
 
 pub(crate) use view::{CALENDAR_GAP, STRIP_HEIGHT, calendar_size};
-// The panel surface is Linux-only for now (ADR-0005 Q4).
-#[cfg(target_os = "linux")]
 pub(crate) use view::{PANEL_SIDE, panel_size};

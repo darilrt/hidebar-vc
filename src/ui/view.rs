@@ -57,7 +57,6 @@ pub(crate) const CALENDAR_GAP: i32 = 4;
 const CALENDAR_BACKGROUND: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.8);
 
 /// Status panel (ADR-0005): width, padding, gap between sections and the heights of each section.
-#[cfg_attr(windows, allow(dead_code))]
 const PANEL_WIDTH: f32 = 300.0;
 const PANEL_PADDING: f32 = 14.0;
 const PANEL_GAP: f32 = 14.0;
@@ -70,7 +69,6 @@ const INFO_GAP: f32 = 10.0;
 const ACTION_BUTTON: f32 = 44.0;
 const ACTION_ICON: f32 = 18.0;
 /// Gap between the panel and the right screen edge: aligned with the `status` pill.
-#[cfg_attr(windows, allow(dead_code))]
 pub(crate) const PANEL_SIDE: i32 = PILL_SIDE as i32;
 
 pub(crate) fn view(state: &Hidebar, surface: Surface) -> Element<'_, Message> {
@@ -82,14 +80,12 @@ pub(crate) fn view(state: &Hidebar, surface: Surface) -> Element<'_, Message> {
 }
 
 /// Meters, information rows, separator and action buttons.
-#[cfg_attr(windows, allow(dead_code))]
 fn panel_height() -> f32 {
     let meters = METER_LABEL + 6.0 + METER_BAR;
     let info = INFO_ROW * INFO_ROWS + INFO_GAP * (INFO_ROWS - 1.0);
     2.0 * PANEL_PADDING + meters + info + 1.0 + ACTION_BUTTON + 3.0 * PANEL_GAP
 }
 
-#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn panel_size() -> (u32, u32) {
     (PANEL_WIDTH as u32, panel_height().ceil() as u32)
 }

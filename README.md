@@ -59,7 +59,7 @@ keys change month; clicking the title or pressing `Home` goes back to the curren
 another `toggle clock`, or by clicking another window. It is the only part of the overlay that takes cursor and
 keyboard input, together with the status panel.
 
-### Status panel (Linux)
+### Status panel
 
 `hidebar toggle status` opens a panel under the `status` pill: CPU and RAM with usage bars, battery, network and
 audio, plus **Log out** and **Power off** buttons. Both actions need a second click within 3 s: the first one
@@ -67,11 +67,9 @@ turns the button orange and shows "Click again…"; moving the cursor away, `Esc
 panel with `Esc`, another `toggle status`, or by clicking another window. While it is open the `status` pill stays
 pinned.
 
-- Power off runs `systemctl poweroff`.
+- Power off runs `systemctl poweroff` on Linux and `shutdown /s /t 0` on Windows.
 - Log out asks the compositor to quit: `hyprctl dispatch exit` (Hyprland) or
-  `niri msg action quit --skip-confirmation` (Niri).
-
-On Windows `toggle status` still pins the pill; the panel comes later.
+  `niri msg action quit --skip-confirmation` (Niri); on Windows it runs `shutdown /l`.
 
 The interface (dates, CLI messages) is in English.
 
@@ -142,7 +140,7 @@ hidebar show <module>      show the module for a few seconds
 hidebar toggle <module>    depends on the module:
                              workspaces → pin / unpin (stays visible until the next toggle)
                              clock      → open / close the calendar
-                             status     → open / close the status panel (Linux; pin / unpin on Windows)
+                             status     → open / close the status panel
 hidebar show all           all three modules for a few seconds
 hidebar toggle all         if anything is pinned, unpin everything; otherwise pin all three
 hidebar quit               stop the daemon
@@ -156,7 +154,7 @@ running, it says so and exits with an error.
 
 ## Windows 11
 
-The same strip and calendar, without a compositor: two layered Win32 windows rendered with
+The same strip, calendar and status panel, without a compositor: layered Win32 windows rendered with
 `iced_tiny_skia` and presented with `UpdateLayeredWindow`.
 
 ![hidebar on Windows 11: clock, status and calendar over a dark desktop](docs/windows.png) The gaps between pills are fully
@@ -168,7 +166,7 @@ Global hotkeys (registered with `RegisterHotKey`):
 | Keys | Action |
 |---|---|
 | `Ctrl+Alt+Win+T` / `B` / `W` / `A` | show clock / status / workspaces / all |
-| `Ctrl+Alt+Win+1` / `2` / `3` / `4` | pin-unpin clock / status / workspaces / all |
+| `Ctrl+Alt+Win+1` / `2` / `3` / `4` | toggle clock (calendar) / status (panel) / workspaces / all |
 
 They deliberately avoid `Ctrl+Shift+T/W/B` (reopen tab, close window, bookmarks bar) and are not
 AltGr combinations, so they do not block typing. Stop the daemon with `hidebar quit`. Set
@@ -179,9 +177,10 @@ Notes:
 
 - `workspaces` is Linux-only for now: Windows has no equivalent compositor IPC, so
   `show workspaces` does nothing.
-- The calendar opens with `hidebar toggle clock` or `Ctrl+Shift+Alt+T` and closes when it loses
-  focus (clicking another window), by design. When opened from a terminal, Windows may not give
-  it keyboard focus (foreground-lock rules); click it or use the hotkey, which does focus it.
+- The calendar and the status panel open with `hidebar toggle clock` / `toggle status` or
+  `Ctrl+Alt+Win+1` / `2`, and close when they lose focus (clicking another window), by design.
+  When opened from a terminal, Windows may not give them keyboard focus (foreground-lock rules);
+  click them or use the hotkey, which does focus them.
 - v1 draws on the primary monitor only.
 - There is no GPU dependency; idle RSS is ~20 MB and measurements are done with
   `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetSystemPowerStatus`, `GetAdaptersAddresses` and
@@ -298,7 +297,8 @@ src/platform/linux/         layer-shell shell + Hyprland/Niri/proc/pactl sources
   session.rs                log out / power off from the status panel
 src/platform/windows/       Win32 layered shell + native sources
   render.rs                 iced tiny-skia -> Pixmap -> DIB -> UpdateLayeredWindow
-  mod.rs                    message loop, timers, hotkeys, calendar input
+  mod.rs                    message loop, timers, hotkeys, calendar and panel input
+  session.rs                log out / power off from the status panel
   battery.rs system.rs      native metrics
   network.rs audio.rs       native sources
   fullscreen.rs             QUNS-based auto-hide

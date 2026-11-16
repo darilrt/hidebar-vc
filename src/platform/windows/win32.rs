@@ -39,7 +39,8 @@ unsafe impl Sync for SendHwnd {}
 pub(crate) const STRIP_EX_STYLE: u32 =
     WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
 
-pub(crate) const CALENDAR_EX_STYLE: u32 = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+/// Calendar and status panel: receive cursor and keyboard while shown.
+pub(crate) const INTERACTIVE_EX_STYLE: u32 = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
 
 pub(crate) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
