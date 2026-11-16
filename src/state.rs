@@ -34,6 +34,21 @@ const PULSE_DIM: f32 = 0.7;
 /// How long an armed session action waits for the confirming click (ADR-0005 Q2).
 const ARM_DURATION: Duration = Duration::from_secs(3);
 
+/// Notice animation (ADR-0006). Entering: the pill stretches leftwards while its background fades in;
+/// only once it is fully stretched does the icon appear. Leaving: the icon fades out first, then the pill
+/// shrinks back to the right.
+const NOTICE_STRETCH: Duration = Duration::from_millis(260);
+const NOTICE_FADE_IN: Duration = Duration::from_millis(80);
+const NOTICE_REVEAL_DELAY: Duration = NOTICE_STRETCH;
+const NOTICE_REVEAL: Duration = Duration::from_millis(220);
+/// Notices entering together start one after another, right to left.
+const NOTICE_STAGGER: Duration = Duration::from_millis(40);
+const NOTICE_HIDE: Duration = Duration::from_millis(120);
+const NOTICE_SHRINK_DELAY: Duration = NOTICE_HIDE;
+const NOTICE_SHRINK: Duration = Duration::from_millis(200);
+/// Frame interval while a notice animates (60 fps).
+pub(crate) const ANIMATION_FRAME: Duration = Duration::from_millis(16);
+
 /// What reaches the daemon from outside the shell: commands and source events.
 #[derive(Debug, Clone)]
 pub(crate) enum Input {
@@ -73,6 +88,110 @@ pub(crate) enum Notice {
 }
 
 const NOTICES: [Notice; 3] = [Notice::Network, Notice::Audio, Notice::Battery];
+
+/// Animation of one notice or module pill: entering (and then settled) or leaving, since `since`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Motion {
+    since: Instant,
+    leaving: bool,
+}
+
+/// How a pill or notice is drawn at a given instant, every value from 0 to 1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Frame {
+    /// Share of its width.
+    pub(crate) size: f32,
+    /// Content opacity (and slide, for notices).
+    pub(crate) reveal: f32,
+    /// Pill background opacity.
+    pub(crate) background: f32,
+}
+
+/// A notice and how it is drawn now.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct NoticeFrame {
+    pub(crate) notice: Notice,
+    pub(crate) size: f32,
+    pub(crate) reveal: f32,
+    pub(crate) background: f32,
+}
+
+impl Motion {
+    fn entering(since: Instant) -> Self {
+        Self {
+            since,
+            leaving: false,
+        }
+    }
+
+    fn frame(&self, instant: Instant) -> Frame {
+        let elapsed = instant.saturating_duration_since(self.since);
+        if self.leaving {
+            let shrink = ease_in(progress(elapsed, NOTICE_SHRINK_DELAY, NOTICE_SHRINK));
+            Frame {
+                size: 1.0 - shrink,
+                reveal: 1.0 - progress(elapsed, Duration::ZERO, NOTICE_HIDE),
+                background: 1.0 - shrink,
+            }
+        } else {
+            Frame {
+                size: ease_out(progress(elapsed, Duration::ZERO, NOTICE_STRETCH)),
+                reveal: ease_out(progress(elapsed, NOTICE_REVEAL_DELAY, NOTICE_REVEAL)),
+                background: progress(elapsed, Duration::ZERO, NOTICE_FADE_IN),
+            }
+        }
+    }
+
+    /// Follows `wanted`: starts entering at `start`, reverses from the current width when it comes back while
+    /// leaving, starts leaving, or ends (`None`) once it is gone. Returns whether it started entering.
+    fn follow(slot: &mut Option<Self>, wanted: bool, start: Instant, instant: Instant) -> bool {
+        match (*slot, wanted) {
+            (None, true) => {
+                *slot = Some(Self::entering(start));
+                return true;
+            }
+            (Some(motion), true) if motion.leaving => {
+                let size = motion.frame(instant).size;
+                let elapsed = NOTICE_STRETCH.mul_f32(1.0 - (1.0 - size).cbrt());
+                *slot = Some(Self::entering(
+                    instant.checked_sub(elapsed).unwrap_or(instant),
+                ));
+            }
+            (Some(motion), false) if !motion.leaving => {
+                *slot = Some(Self {
+                    since: instant,
+                    leaving: true,
+                });
+            }
+            (Some(motion), false) if motion.done(instant) => *slot = None,
+            _ => {}
+        }
+        false
+    }
+
+    /// Nothing left to animate: fully shown, or gone.
+    fn done(&self, instant: Instant) -> bool {
+        let end = if self.leaving {
+            NOTICE_SHRINK_DELAY + NOTICE_SHRINK
+        } else {
+            NOTICE_REVEAL_DELAY + NOTICE_REVEAL
+        };
+        instant >= self.since && instant.duration_since(self.since) >= end
+    }
+}
+
+/// Share of `duration` elapsed after `delay`, from 0 to 1.
+fn progress(elapsed: Duration, delay: Duration, duration: Duration) -> f32 {
+    (elapsed.saturating_sub(delay).as_secs_f32() / duration.as_secs_f32()).min(1.0)
+}
+
+fn ease_out(progress: f32) -> f32 {
+    1.0 - (1.0 - progress).powi(3)
+}
+
+fn ease_in(progress: f32) -> f32 {
+    progress.powi(3)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Visibility {
@@ -125,6 +244,10 @@ pub(crate) struct Hidebar {
     visibility: [Visibility; 3],
     /// Expiry of each momentary notice, indexed by `Notice`.
     notices: [Option<Instant>; 3],
+    /// Animation of each notice on screen (entering, shown or leaving), indexed by `Notice`.
+    motions: [Option<Motion>; 3],
+    /// Animation of each module pill, indexed by `Module`.
+    module_motions: [Option<Motion>; 3],
     /// Last known data; `None` until each source's first event.
     pub(crate) workspaces: Option<Workspaces>,
     pub(crate) battery: Option<Battery>,
@@ -151,6 +274,8 @@ impl Hidebar {
         Self {
             visibility: [Visibility::Hidden; 3],
             notices: [None; 3],
+            motions: [None; 3],
+            module_motions: [None; 3],
             workspaces: None,
             battery: None,
             system: None,
@@ -361,7 +486,103 @@ impl Hidebar {
         }
     }
 
-    /// Notices to draw, in order. None while `status` is visible: the full pill already contains them.
+    /// Starts, reverses or ends the notice animations so that they follow `active_notices`.
+    fn animate(&mut self, instant: Instant) {
+        for module in MODULES {
+            let wanted = self.visible(module);
+            Motion::follow(
+                &mut self.module_motions[module as usize],
+                wanted,
+                instant,
+                instant,
+            );
+        }
+        // The full `status` pill replaces the notices at once.
+        if self.visible(Module::Status) {
+            self.motions = [None; 3];
+            return;
+        }
+        let wanted = self.active_notices();
+        let mut entering = 0;
+        // Right to left, so the stagger starts from the edge the pill grows from.
+        for notice in NOTICES.into_iter().rev() {
+            let start = instant + NOTICE_STAGGER * entering;
+            let slot = &mut self.motions[notice as usize];
+            if Motion::follow(slot, wanted.contains(&notice), start, instant) {
+                entering += 1;
+            }
+        }
+    }
+
+    /// How a module pill is drawn now; `None` when it is not on screen.
+    pub(crate) fn module_frame(&self, module: Module) -> Option<Frame> {
+        self.module_motions[module as usize].map(|motion| motion.frame(self.frame))
+    }
+
+    /// The strip surface has just appeared (Linux creates it on demand, which takes a moment): notices
+    /// entering before then start over from `instant`, keeping their stagger, so the stretch is seen whole.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn strip_opened(&mut self, instant: Instant) {
+        let Some(first) = self
+            .motions
+            .iter()
+            .chain(&self.module_motions)
+            .flatten()
+            .filter(|motion| !motion.leaving)
+            .map(|motion| motion.since)
+            .min()
+        else {
+            return;
+        };
+        let Some(delay) = instant.checked_duration_since(first) else {
+            return;
+        };
+        for motion in self
+            .motions
+            .iter_mut()
+            .chain(&mut self.module_motions)
+            .flatten()
+        {
+            if !motion.leaving {
+                motion.since += delay;
+            }
+        }
+        self.frame = instant;
+    }
+
+    /// Notices on screen, in order, as they look at the current frame.
+    pub(crate) fn notice_frames(&self) -> Vec<NoticeFrame> {
+        NOTICES
+            .into_iter()
+            .filter_map(|notice| {
+                self.motions[notice as usize].map(|motion| {
+                    let Frame {
+                        size,
+                        reveal,
+                        background,
+                    } = motion.frame(self.frame);
+                    NoticeFrame {
+                        notice,
+                        size,
+                        reveal,
+                        background,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// A notice or module pill is entering or leaving: the shell must send `ANIMATION_FRAME` frames.
+    pub(crate) fn animating(&self) -> bool {
+        self.motions
+            .iter()
+            .chain(&self.module_motions)
+            .flatten()
+            .any(|motion| motion.leaving || !motion.done(self.frame))
+    }
+
+    /// Notices that should be on screen, in order. None while `status` is visible: the full pill already
+    /// contains them. Entering and leaving is up to `animate`.
     pub(crate) fn active_notices(&self) -> Vec<Notice> {
         if self.visible(Module::Status) {
             return Vec::new();
@@ -398,9 +619,14 @@ impl Hidebar {
         self.strip_wanted() && self.severity() != Severity::Normal
     }
 
-    /// The strip must be open: some module visible or some notice active.
+    /// The strip must be open: some module visible or some notice on screen (even while leaving).
     pub(crate) fn strip_wanted(&self) -> bool {
-        MODULES.iter().any(|module| self.visible(*module)) || !self.active_notices().is_empty()
+        MODULES.iter().any(|module| self.visible(*module))
+            || self
+                .motions
+                .iter()
+                .chain(&self.module_motions)
+                .any(Option::is_some)
     }
 
     pub(crate) fn calendar_wanted(&self) -> bool {
@@ -440,6 +666,9 @@ impl Hidebar {
             }
             Input::Event(event) => self.on_event(event),
         }
+        let instant = Instant::now();
+        self.frame = instant;
+        self.animate(instant);
     }
 
     /// Advances the time and expires momentary items.
@@ -447,12 +676,14 @@ impl Hidebar {
         self.now = now();
         self.frame = instant;
         self.expire(instant);
+        self.animate(instant);
     }
 
-    /// New pulse frame without reformatting the time (Linux, 20 fps).
+    /// New pulse or animation frame without reformatting the time (Linux).
     #[cfg(target_os = "linux")]
     pub(crate) fn frame(&mut self, instant: Instant) {
         self.frame = instant;
+        self.animate(instant);
     }
 
     /// Presentation decides which events deserve to appear.
@@ -579,9 +810,12 @@ mod tests {
         state
     }
 
-    /// Expires everything momentary.
+    /// Expires everything momentary and lets the notices finish leaving.
     fn expire_all(state: &mut Hidebar) {
-        state.expire(Instant::now() + Duration::from_secs(60));
+        let later = Instant::now() + Duration::from_secs(60);
+        state.expire(later);
+        state.animate(later);
+        state.animate(later + Duration::from_secs(1));
         state.frame = Instant::now();
     }
 
@@ -642,7 +876,10 @@ mod tests {
         assert_eq!(state.visibility(Module::Status), Visibility::Pinned);
         assert!(state.active_notices().is_empty(), "pinned: no notices");
         apply(&mut state, toggle(Target::Status));
-        assert!(!state.visible(Module::Status) && !state.strip_wanted());
+        assert!(!state.visible(Module::Status));
+        assert!(state.strip_wanted(), "the pill folds back first");
+        state.animate(Instant::now() + Duration::from_secs(1));
+        assert!(!state.strip_wanted());
     }
 
     #[test]
@@ -890,6 +1127,152 @@ mod tests {
             state.press(Action::Poweroff, start + ARM_DURATION),
             None,
             "late press arms again"
+        );
+    }
+
+    /// The single notice frame at `instant`.
+    fn frame_at(state: &mut Hidebar, instant: Instant) -> Vec<NoticeFrame> {
+        state.frame = instant;
+        state.animate(instant);
+        state.notice_frames()
+    }
+
+    #[test]
+    fn notice_stretches_then_reveals() {
+        let mut state = ready();
+        apply(&mut state, input(Event::Network(Network::Offline)));
+        let start = state.frame;
+        let frames = frame_at(&mut state, start);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            (frames[0].size, frames[0].reveal),
+            (0.0, 0.0),
+            "starts as a circle"
+        );
+        assert!(state.animating());
+
+        let frames = frame_at(&mut state, start + Duration::from_millis(150));
+        assert!(
+            frames[0].size > 0.8 && frames[0].reveal == 0.0,
+            "stretched, icon not yet"
+        );
+        assert_eq!(frames[0].background, 1.0);
+
+        let frames = frame_at(&mut state, start + Duration::from_millis(250));
+        assert_eq!(frames[0].reveal, 0.0, "no icon until fully stretched");
+
+        let frames = frame_at(&mut state, start + Duration::from_millis(300));
+        assert!(frames[0].size == 1.0 && frames[0].reveal > 0.0 && frames[0].reveal < 1.0);
+
+        let frames = frame_at(&mut state, start + Duration::from_millis(480));
+        assert_eq!((frames[0].size, frames[0].reveal), (1.0, 1.0));
+        assert!(!state.animating(), "settled: no frames");
+    }
+
+    #[test]
+    fn expired_notice_leaves_before_closing_the_strip() {
+        let mut state = ready();
+        apply(&mut state, input(Event::Network(Network::Offline)));
+        let end = state.frame + NOTICE_DURATION;
+        state.expire(end);
+        assert!(state.active_notices().is_empty());
+
+        let frames = frame_at(&mut state, end);
+        assert_eq!(
+            (frames[0].size, frames[0].reveal),
+            (1.0, 1.0),
+            "leaving starts full"
+        );
+        assert!(state.strip_wanted() && state.animating());
+
+        let frames = frame_at(&mut state, end + Duration::from_millis(120));
+        assert_eq!(frames[0].reveal, 0.0, "icon gone first");
+        assert_eq!(
+            frames[0].size, 1.0,
+            "the pill shrinks only after the icon is gone"
+        );
+
+        assert!(frame_at(&mut state, end + Duration::from_millis(320)).is_empty());
+        assert!(!state.strip_wanted() && !state.animating());
+    }
+
+    #[test]
+    fn notice_back_while_leaving_reverses_from_its_width() {
+        let mut state = ready();
+        apply(&mut state, input(Event::Network(Network::Offline)));
+        let end = state.frame + NOTICE_DURATION;
+        state.expire(end);
+        frame_at(&mut state, end);
+        let middle = end + Duration::from_millis(200);
+        let leaving = frame_at(&mut state, middle)[0].size;
+        assert!(leaving > 0.0 && leaving < 1.0);
+
+        state.notify(Notice::Network);
+        let back = frame_at(&mut state, middle)[0].size;
+        assert!((back - leaving).abs() < 0.01, "{back} vs {leaving}");
+        assert!(state.animating());
+    }
+
+    #[test]
+    fn simultaneous_notices_stagger_right_to_left() {
+        let mut state = ready();
+        let start = Instant::now();
+        state.notify(Notice::Network);
+        state.notify(Notice::Battery);
+        frame_at(&mut state, start);
+        let frames = frame_at(&mut state, start + Duration::from_millis(20));
+        let size = |notice| frames.iter().find(|f| f.notice == notice).unwrap().size;
+        assert!(size(Notice::Battery) > 0.0, "rightmost first");
+        assert_eq!(size(Notice::Network), 0.0, "next one 40 ms later");
+    }
+
+    #[test]
+    fn full_status_replaces_notices_at_once() {
+        let mut state = ready();
+        apply(&mut state, input(Event::Network(Network::Offline)));
+        assert!(!state.notice_frames().is_empty());
+        apply(&mut state, show(Target::Status));
+        assert!(state.notice_frames().is_empty(), "notices go at once");
+        assert!(state.module_frame(Module::Status).is_some() && state.animating());
+    }
+
+    #[test]
+    fn module_pills_stretch_in_and_fold_back() {
+        let mut state = ready();
+        apply(&mut state, show(Target::Clock));
+        let start = state.frame;
+        let at = |state: &mut Hidebar, ms| {
+            let instant = start + Duration::from_millis(ms);
+            state.frame = instant;
+            state.tick(instant);
+            state.module_frame(Module::Clock)
+        };
+        let frame = at(&mut state, 0).unwrap();
+        assert_eq!((frame.size, frame.reveal), (0.0, 0.0));
+        let frame = at(&mut state, 250).unwrap();
+        assert!(frame.size > 0.9 && frame.reveal == 0.0, "stretch first");
+        let frame = at(&mut state, 480).unwrap();
+        assert_eq!((frame.size, frame.reveal), (1.0, 1.0));
+
+        let end = 3000;
+        let frame = at(&mut state, end).unwrap();
+        assert_eq!(frame.size, 1.0, "leaving starts full");
+        assert!(!state.visible(Module::Clock) && state.strip_wanted());
+        assert!(at(&mut state, end + 320).is_none());
+        assert!(!state.strip_wanted());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn notices_wait_for_the_strip_surface() {
+        let mut state = ready();
+        apply(&mut state, input(Event::Network(Network::Offline)));
+        let opened = state.frame + Duration::from_millis(250);
+        state.strip_opened(opened);
+        let frames = frame_at(&mut state, opened);
+        assert_eq!(
+            frames[0].size, 0.0,
+            "the stretch starts when the strip appears"
         );
     }
 }

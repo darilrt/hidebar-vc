@@ -16,6 +16,7 @@ iced = { version = "0.14.0", default-features = false, features = [
     "tokio",
     "wayland",
     "svg",
+    "advanced",
 ] }
 iced_layershell = "0.19.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -28,6 +29,7 @@ iced = { version = "0.14.0", default-features = false, features = [
     "web-colors",
     "thread-pool",
     "svg",
+    "advanced",
 ] }
 iced_runtime = "0.14.0"
 iced_tiny_skia = { version = "0.14.1", default-features = false, features = ["svg"] }

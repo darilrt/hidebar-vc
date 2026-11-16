@@ -30,6 +30,10 @@ Each module is drawn in its own semi-transparent black pill near the top edge of
 
 When something changes, hidebar does not open the whole `status` pill: it shows **only the icon of what changed**,
 in a small pill in the same top-right spot, for 3 s.
+The pill stretches out leftwards from the screen edge and then the icon slides in; when it expires the icon
+fades and the pill folds back to the right.
+Module pills (`workspaces`, `clock`, `status`) appear and disappear the same way, each one growing from its side
+of the screen (the clock from the center).
 
 - **Network:** the network icon, when connectivity changes.
 - **Audio:** a crossed-out speaker when the output goes silent, a regular speaker when sound comes back.

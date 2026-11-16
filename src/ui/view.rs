@@ -6,10 +6,11 @@ use std::sync::LazyLock;
 use iced::widget::{Column, Row, button, column, container, mouse_area, row, space, svg, text};
 use iced::{Alignment, Border, Color, Element, Length, Padding};
 
+use super::stretch::Stretch;
 use super::{Message, Surface};
 use crate::calendar::{self, WEEKDAYS_SHORT};
 use crate::event::{Audio, Battery, BatteryStatus, Network, System, Workspaces};
-use crate::state::{Action, Hidebar, Module, Notice, Severity, severity};
+use crate::state::{Action, Frame, Hidebar, Module, Notice, NoticeFrame, Severity, severity};
 
 /// Height of the strip surface, in logical pixels.
 pub(crate) const STRIP_HEIGHT: u32 = 34;
@@ -20,6 +21,11 @@ const PILL_TOP: f32 = 6.0;
 const PILL_SIDE: f32 = 12.0;
 const PILL_PADDING: f32 = 12.0;
 const DOT_SIZE: f32 = 7.0;
+/// Notices (ADR-0006): gap between icons, as in `status`, and how far each icon slides in from the right.
+const NOTICE_GAP: f32 = 12.0;
+const NOTICE_SLIDE: f32 = 6.0;
+/// Battery icon: body plus terminal.
+const BATTERY_ICON_WIDTH: f32 = 22.0;
 
 const DIM: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.6);
 const WARNING_COLOR: Color = Color::from_rgb(1.0, 0.65, 0.25);
@@ -98,21 +104,31 @@ pub(crate) fn calendar_size() -> (u32, u32) {
 }
 
 fn strip_view(state: &Hidebar) -> Element<'_, Message> {
-    let module = |module: Module, content: Option<Element<'static, Message>>| match content {
-        Some(content) if state.visible(module) => pill(content),
-        _ => space().into(),
-    };
-    let left = module(
-        Module::Workspaces,
-        state.workspaces.as_ref().map(workspaces_view),
-    );
-    let center = module(Module::Clock, Some(clock_view(state)));
-    // On the right, the full `status` or, if hidden, the active notices.
-    let notices = state.active_notices();
-    let right = if state.visible(Module::Status) {
-        pill(status_view(state))
+    // Module pills stretch in and out (ADR-0006); the content shows once stretched.
+    let module =
+        |module: Module, content: fn(&Hidebar, f32) -> Option<Element<'static, Message>>| {
+            state
+                .module_frame(module)
+                .and_then(|frame| Some(stretched(content(state, frame.reveal)?, frame)))
+        };
+    let left = module(Module::Workspaces, |state, alpha| {
+        state
+            .workspaces
+            .as_ref()
+            .map(|workspaces| workspaces_view(workspaces, alpha))
+    })
+    .unwrap_or_else(|| space().into());
+    let center = module(Module::Clock, |state, alpha| Some(clock_view(state, alpha)))
+        .unwrap_or_else(|| space().into());
+    // On the right, the full `status` or, if hidden, the notices on screen.
+    let notices = state.notice_frames();
+    let status = module(Module::Status, |state, alpha| {
+        Some(status_view(state, alpha))
+    });
+    let right = if let Some(status) = status {
+        status
     } else if !notices.is_empty() {
-        pill(notices_view(state, &notices))
+        notices_pill(state, &notices)
     } else {
         space().into()
     };
@@ -138,23 +154,26 @@ fn strip_view(state: &Hidebar) -> Element<'_, Message> {
         .into()
 }
 
-/// Pill-shaped background around an element.
-fn pill(content: Element<'static, Message>) -> Element<'static, Message> {
-    container(content)
-        .center_y(PILL_HEIGHT)
-        .padding([0.0, PILL_PADDING])
-        .style(|_| container::Style {
-            background: Some(PILL_BACKGROUND.into()),
-            border: Border::default().rounded(PILL_HEIGHT / 2.0),
-            ..Default::default()
-        })
-        .into()
+/// Pill-shaped background around an element, at the width and opacity of `frame`.
+fn stretched(content: Element<'static, Message>, frame: Frame) -> Element<'static, Message> {
+    Stretch::new(
+        content,
+        frame.size,
+        fade(PILL_BACKGROUND, frame.background),
+        PILL_HEIGHT,
+        Padding::from([0.0, PILL_PADDING]),
+    )
+    .into()
 }
 
-fn clock_view(state: &Hidebar) -> Element<'static, Message> {
+fn clock_view(state: &Hidebar, alpha: f32) -> Element<'static, Message> {
     row![
-        text(state.now.time.clone()).size(16).color(Color::WHITE),
-        text(state.now.date.clone()).size(11).color(DIM),
+        text(state.now.time.clone())
+            .size(16)
+            .color(fade(Color::WHITE, alpha)),
+        text(state.now.date.clone())
+            .size(11)
+            .color(fade(DIM, alpha)),
     ]
     .spacing(8)
     .align_y(Alignment::Center)
@@ -162,76 +181,144 @@ fn clock_view(state: &Hidebar) -> Element<'static, Message> {
 }
 
 /// One dot per workspace; the active one filled.
-fn workspaces_view(workspaces: &Workspaces) -> Element<'static, Message> {
+fn workspaces_view(workspaces: &Workspaces, alpha: f32) -> Element<'static, Message> {
+    let color = fade(Color::WHITE, alpha);
     let dots = workspaces
         .ids
         .iter()
-        .map(|id| circle(DOT_SIZE, Color::WHITE, *id == workspaces.active));
+        .map(|id| circle(DOT_SIZE, color, *id == workspaces.active));
     Row::with_children(dots).spacing(6).into()
 }
 
 /// network · cpu · ram · mute · battery. Anything without a reading yet is not shown;
 /// mute, only when nothing is audible.
-fn status_view(state: &Hidebar) -> Element<'static, Message> {
+fn status_view(state: &Hidebar, alpha: f32) -> Element<'static, Message> {
     let mut line = Row::new().spacing(12).align_y(Alignment::Center);
     if let Some(network) = state.network {
-        line = line.push(network_view(network));
+        line = line.push(network_view(network, alpha));
     }
     if let Some(System { cpu, ram }) = state.system {
         line = line
-            .push(metric(&ICON_CPU, cpu))
-            .push(metric(&ICON_RAM, ram));
+            .push(metric(&ICON_CPU, cpu, alpha))
+            .push(metric(&ICON_RAM, ram, alpha));
     }
     if state.audio.is_some_and(|audio: Audio| audio.silent()) {
-        line = line.push(tinted(&ICON_MUTED, Color::WHITE));
+        line = line.push(faded(&ICON_MUTED, Color::WHITE, alpha));
     }
     if let Some(battery) = &state.battery {
-        line = line.push(battery_view(battery, state.pulse()));
+        line = line.push(battery_view(battery, state.pulse(), alpha));
     }
     line.into()
 }
 
-/// Notices together in one pill, looking the same as in `status`. Battery: icon only.
-fn notices_view(state: &Hidebar, notices: &[Notice]) -> Element<'static, Message> {
-    let items = notices.iter().filter_map(|notice| match notice {
-        Notice::Network => state.network.map(network_view),
-        Notice::Audio => state.audio.map(audio_view),
-        Notice::Battery => state
-            .battery
-            .as_ref()
-            .map(|battery| battery_icon(battery, state.pulse())),
-    });
-    Row::with_children(items)
-        .spacing(12)
-        .align_y(Alignment::Center)
+/// Notices together in one pill, looking the same as in `status` (battery: icon only), animated (ADR-0006).
+///
+/// The width is computed, not measured: each notice takes `size` of its box and the pill is anchored on
+/// its right edge, so it stretches leftwards. In its box, the icon is aligned right, followed by a spacer
+/// that grows to `NOTICE_SLIDE` as it appears: the icon slides in from the right. The right padding gives
+/// that spacer back, so a settled pill looks like before.
+fn notices_pill(state: &Hidebar, notices: &[NoticeFrame]) -> Element<'static, Message> {
+    let background = notices
+        .iter()
+        .map(|frame| frame.background)
+        .fold(0.0, f32::max);
+    let mut content = 0.0;
+    let mut items = Row::new().align_y(Alignment::Center);
+    for (index, frame) in notices.iter().enumerate() {
+        let Some((icon, width)) = notice_icon(state, frame.notice, frame.reveal) else {
+            continue;
+        };
+        let lead = if index == 0 {
+            0.0
+        } else {
+            NOTICE_GAP - NOTICE_SLIDE
+        };
+        let slot = frame.size * (lead + width + NOTICE_SLIDE);
+        content += slot;
+        // Not drawn until it starts appearing: a narrower box would squeeze it.
+        let icon = if frame.reveal > 0.0 {
+            icon
+        } else {
+            space().into()
+        };
+        items = items.push(
+            container(row![icon, space().width(NOTICE_SLIDE * frame.reveal)])
+                .width(slot)
+                .align_right(slot)
+                .clip(true),
+        );
+    }
+
+    let padding = Padding {
+        top: 0.0,
+        right: PILL_PADDING - NOTICE_SLIDE,
+        bottom: 0.0,
+        left: PILL_PADDING,
+    };
+    let width = (padding.left + padding.right + content).max(PILL_HEIGHT);
+    container(items)
+        .width(width)
+        .center_y(PILL_HEIGHT)
+        .align_right(width)
+        .padding(padding)
+        .clip(true)
+        .style(move |_| container::Style {
+            background: Some(fade(PILL_BACKGROUND, background).into()),
+            border: Border::default().rounded(PILL_HEIGHT / 2.0),
+            ..Default::default()
+        })
         .into()
 }
 
+/// The notice's icon at opacity `alpha`, and its width; `None` without a reading.
+fn notice_icon(
+    state: &Hidebar,
+    notice: Notice,
+    alpha: f32,
+) -> Option<(Element<'static, Message>, f32)> {
+    match notice {
+        Notice::Network => state
+            .network
+            .map(|network| (network_view(network, alpha), ICON_SIZE)),
+        Notice::Audio => state
+            .audio
+            .map(|audio| (audio_view(audio, alpha), ICON_SIZE)),
+        Notice::Battery => state.battery.as_ref().map(|battery| {
+            (
+                battery_icon(battery, state.pulse(), alpha),
+                BATTERY_ICON_WIDTH,
+            )
+        }),
+    }
+}
+
 /// Crossed-out speaker when silent; regular speaker with sound.
-fn audio_view(audio: Audio) -> Element<'static, Message> {
+fn audio_view(audio: Audio, alpha: f32) -> Element<'static, Message> {
     let icon = if audio.silent() {
         &ICON_MUTED
     } else {
         &ICON_SPEAKER
     };
-    tinted(icon, Color::WHITE)
+    faded(icon, Color::WHITE, alpha)
 }
 
 /// White wifi with internet, orange with no way out, crossed-out orange-red with no network.
-fn network_view(network: Network) -> Element<'static, Message> {
+fn network_view(network: Network, alpha: f32) -> Element<'static, Message> {
     let (icon, color) = match network {
         Network::Online => (&ICON_NET, Color::WHITE),
         Network::NoInternet => (&ICON_NET, WARNING_COLOR),
         Network::Offline => (&ICON_NET_OFF, CRITICAL_COLOR),
     };
-    tinted(icon, color)
+    faded(icon, color, alpha)
 }
 
 /// Dim icon + "12 %" in white.
-fn metric(icon: &svg::Handle, percent: u8) -> Element<'static, Message> {
+fn metric(icon: &svg::Handle, percent: u8, alpha: f32) -> Element<'static, Message> {
     row![
-        tinted(icon, DIM),
-        text(format!("{percent} %")).size(12).color(Color::WHITE),
+        faded(icon, DIM, alpha),
+        text(format!("{percent} %"))
+            .size(12)
+            .color(fade(Color::WHITE, alpha)),
     ]
     .spacing(4)
     .align_y(Alignment::Center)
@@ -239,9 +326,15 @@ fn metric(icon: &svg::Handle, percent: u8) -> Element<'static, Message> {
 }
 
 fn tinted(icon: &svg::Handle, color: Color) -> Element<'static, Message> {
+    faded(icon, color, 1.0)
+}
+
+/// Tinted icon at opacity `alpha`. The renderers ignore the tint's alpha, so it goes through `opacity`.
+fn faded(icon: &svg::Handle, color: Color, alpha: f32) -> Element<'static, Message> {
     svg(icon.clone())
         .width(ICON_SIZE)
         .height(ICON_SIZE)
+        .opacity(alpha)
         .style(move |_, _| svg::Style { color: Some(color) })
         .into()
 }
@@ -265,14 +358,14 @@ fn circle(size: f32, color: Color, filled: bool) -> Element<'static, Message> {
 
 /// "charging 80 %" + icon. Same states as the battery notice: yellow while charging,
 /// white, or pulsing orange-red with low or critical battery.
-fn battery_view(battery: &Battery, pulse: f32) -> Element<'static, Message> {
-    let color = battery_shade(battery, pulse);
+fn battery_view(battery: &Battery, pulse: f32, alpha: f32) -> Element<'static, Message> {
+    let color = fade(battery_shade(battery, pulse), alpha);
     let mut line = Row::new().spacing(6).align_y(Alignment::Center);
     if battery.status == BatteryStatus::Charging {
-        line = line.push(text("charging").size(11).color(CHARGING_COLOR));
+        line = line.push(text("charging").size(11).color(fade(CHARGING_COLOR, alpha)));
     }
     line.push(text(format!("{} %", battery.percent)).size(12).color(color))
-        .push(battery_icon(battery, pulse))
+        .push(battery_icon(battery, pulse, alpha))
         .into()
 }
 
@@ -286,15 +379,17 @@ fn battery_shade(battery: &Battery, pulse: f32) -> Color {
     }
 }
 
-/// Battery body filled according to the level, plus the terminal.
-fn battery_icon(battery: &Battery, pulse: f32) -> Element<'static, Message> {
-    const BODY_WIDTH: f32 = 20.0;
+/// Battery body filled according to the level, plus the terminal. `alpha` fades the outline too;
+/// `pulse` only the fill.
+fn battery_icon(battery: &Battery, pulse: f32, alpha: f32) -> Element<'static, Message> {
+    const BODY_WIDTH: f32 = BATTERY_ICON_WIDTH - 2.0;
     const BODY_HEIGHT: f32 = 10.0;
     const BORDER: f32 = 1.2;
     const PADDING: f32 = 1.5;
     let inner = BODY_WIDTH - 2.0 * (BORDER + PADDING);
     let level = inner * f32::from(battery.percent) / 100.0;
-    let color = battery_shade(battery, pulse);
+    let color = fade(battery_shade(battery, pulse), alpha);
+    let outline = fade(Color::WHITE, alpha);
 
     let fill = container(space())
         .width(level)
@@ -308,9 +403,9 @@ fn battery_icon(battery: &Battery, pulse: f32) -> Element<'static, Message> {
         .width(BODY_WIDTH)
         .height(BODY_HEIGHT)
         .padding(PADDING)
-        .style(|_| container::Style {
+        .style(move |_| container::Style {
             border: Border {
-                color: Color::WHITE,
+                color: outline,
                 width: BORDER,
                 radius: 2.5.into(),
             },
@@ -319,8 +414,8 @@ fn battery_icon(battery: &Battery, pulse: f32) -> Element<'static, Message> {
     let nub = container(space())
         .width(2.0)
         .height(4.0)
-        .style(|_| container::Style {
-            background: Some(Color::WHITE.into()),
+        .style(move |_| container::Style {
+            background: Some(outline.into()),
             border: Border::default().rounded(1.0),
             ..Default::default()
         });
@@ -410,7 +505,7 @@ fn panel_view(state: &Hidebar) -> Element<'static, Message> {
                 .push(text(label).size(13).color(label_color));
         }
         info = info.push(info_row(
-            battery_icon(battery, state.pulse()),
+            battery_icon(battery, state.pulse(), 1.0),
             "Battery",
             value.into(),
         ));
@@ -422,7 +517,7 @@ fn panel_view(state: &Hidebar) -> Element<'static, Message> {
             Network::Offline => ("Offline", CRITICAL_COLOR),
         };
         info = info.push(info_row(
-            network_view(network),
+            network_view(network, 1.0),
             "Network",
             text(label).size(13).color(color).into(),
         ));
@@ -434,7 +529,7 @@ fn panel_view(state: &Hidebar) -> Element<'static, Message> {
             format!("{} %", audio.volume)
         };
         info = info.push(info_row(
-            audio_view(audio),
+            audio_view(audio, 1.0),
             "Audio",
             text(label).size(13).color(Color::WHITE).into(),
         ));

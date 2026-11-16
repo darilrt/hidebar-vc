@@ -38,7 +38,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::command::Command;
 use crate::event::Event;
-use crate::state::{CLOCK_TICK, FRAME, Hidebar, Input, Module, TICK};
+use crate::state::{ANIMATION_FRAME, CLOCK_TICK, FRAME, Hidebar, Input, Module, TICK};
 use crate::ui;
 use geometry::WorkArea;
 use render::LayeredSurface;
@@ -201,7 +201,9 @@ impl Shell {
     }
 
     fn update_timer(&mut self) {
-        let interval = if self.state.pulsing() {
+        let interval = if self.state.animating() {
+            Some(ANIMATION_FRAME.as_millis() as u32)
+        } else if self.state.pulsing() {
             Some(FRAME.as_millis() as u32)
         } else if self.state.momentary() {
             Some(TICK.as_millis() as u32)

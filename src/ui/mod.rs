@@ -3,6 +3,7 @@
 //! The shell decides which surface to draw; there are no Wayland, Win32 or
 //! window types here. The same view is used with wgpu (Linux) and tiny-skia (Windows).
 
+mod stretch;
 mod view;
 
 use iced::Element;

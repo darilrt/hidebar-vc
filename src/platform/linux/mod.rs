@@ -25,7 +25,7 @@ use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::{daemon, to_layer_message};
 
 use crate::command::Command;
-use crate::state::{CLOCK_TICK, FRAME, Hidebar, Input, Module, TICK};
+use crate::state::{ANIMATION_FRAME, CLOCK_TICK, FRAME, Hidebar, Input, Module, TICK};
 use crate::ui::{self, Message as UiMessage};
 use session::Compositor;
 
@@ -58,6 +58,7 @@ enum Message {
     Ui(UiMessage),
     Tick,
     Frame,
+    Opened(window::Id),
     Closed(window::Id),
     Focus(window::Id, bool),
     Key(window::Id, Named),
@@ -122,6 +123,8 @@ fn handle(shell: &mut Shell, message: Message) -> Task<Message> {
         },
         Message::Tick => shell.state.tick(Instant::now()),
         Message::Frame => shell.state.frame(Instant::now()),
+        // The strip surface takes a moment to appear: notices start animating once it is there.
+        Message::Opened(id) if shell.strip == Some(id) => shell.state.strip_opened(Instant::now()),
         Message::Closed(id) => {
             // If the compositor closed a surface, `sync` reopens it if it is still needed.
             shell.strip.take_if(|strip| *strip == id);
@@ -228,13 +231,19 @@ fn surface(
 }
 
 fn subscription(shell: &Shell) -> Subscription<Message> {
-    let mut subscriptions = vec![window::close_events().map(Message::Closed)];
+    let mut subscriptions = vec![
+        window::open_events().map(Message::Opened),
+        window::close_events().map(Message::Closed),
+    ];
     if shell.state.momentary() {
         subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
     } else if shell.state.visible(Module::Clock) {
         subscriptions.push(iced::time::every(CLOCK_TICK).map(|_| Message::Tick));
     }
-    if shell.state.pulsing() {
+    // Notice animation at 60 fps; otherwise the low-battery pulse at 20 fps.
+    if shell.state.animating() {
+        subscriptions.push(iced::time::every(ANIMATION_FRAME).map(|_| Message::Frame));
+    } else if shell.state.pulsing() {
         subscriptions.push(iced::time::every(FRAME).map(|_| Message::Frame));
     }
     if shell.calendar_surface.is_some() || shell.panel_surface.is_some() {
