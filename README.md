@@ -2,9 +2,10 @@
 
 A minimal status overlay for **Hyprland**, **Niri** and **Windows 11**, written in Rust.
 
-It is not a bar: it reserves no screen space, never takes the cursor (clicks pass through it) and only shows up
-when you call it with a keybinding or when something relevant happens (you switch workspace, the network drops,
-you plug in the charger…). The rest of the time nothing is drawn.
+It is not a bar: it reserves no screen space, the strip never takes the cursor (clicks pass through it) and it only
+shows up when you call it with a keybinding or when something relevant happens (you switch workspace, the network
+drops, you plug in the charger, an app sends a notification…). The rest of the time nothing is drawn. On Linux it is
+also your desktop notification server.
 
 ![hidebar with every module pinned over the desktop](docs/screenshot.jpg)
 
@@ -24,7 +25,7 @@ Each module is drawn in its own semi-transparent black pill near the top edge of
 |--------------|-------------------|--------------------------------------------|---------------------------------------------|
 | `workspaces` | top left          | one dot per workspace; the active one filled | you switch workspace (1.5 s)              |
 | `clock`      | top center        | time and date                              | —                                           |
-| `status`     | top right         | network · cpu · ram · mute · battery       | — (see notices)                             |
+| `status`     | top right         | network · notifications · cpu · ram · mute · battery | — (see notices)                   |
 
 ### Notices
 
@@ -62,8 +63,8 @@ everything.
 
 `hidebar toggle clock` opens the current month under the clock, with today highlighted. `‹` `›` or the ←/→ arrow
 keys change month; clicking the title or pressing `Home` goes back to the current month. Close it with `Esc`,
-another `toggle clock`, or by clicking another window. It is the only part of the overlay that takes cursor and
-keyboard input, together with the status panel.
+another `toggle clock`, or by clicking another window. Together with the status panel it is the only part of the
+overlay that takes keyboard input; those two and the notification cards are the only parts that take the cursor.
 
 ### Status panel
 
@@ -77,6 +78,24 @@ pinned.
 - Log out asks the compositor to quit: `hyprctl dispatch exit` (Hyprland) or
   `niri msg action quit --skip-confirmation` (Niri); on Windows it runs `shutdown /l`.
 
+### Desktop notifications (Linux)
+
+hidebar is a notification server (`org.freedesktop.Notifications`): apps and `notify-send` show their
+notifications as cards under the right end of the strip. Each card has the app name and how long ago it arrived,
+the title, up to two lines of body text, the app's image (a file or raw pixels) and its action buttons. Cards
+stretch down like the panels and fold back when done.
+
+- Up to three cards at once, critical ones first; the rest wait behind a "N more notifications" pill, and clicking
+  it shows up to six.
+- Normal ones stay 5 s and low-urgency ones 3 s, unless the app sets its own time; a thin line along the bottom
+  shows the time left. Critical ones (orange) and those sent with a timeout of 0 stay until closed.
+- Clicking a card runs the app's default action, if it has one, and closes it; the buttons run the other actions;
+  the × that shows under the cursor just closes it. With the cursor over a card, it does not expire.
+- Notifications with a progress value (`-h int:value:64`) show a progress bar.
+- The `status` pill shows a bell with the number of open notifications.
+- Only one program can own the name: stop any other notification daemon (dunst, mako, swaync...). If the name is
+  taken, hidebar prints a warning and runs without notifications.
+
 The interface (dates, CLI messages) is in English.
 
 ## Requirements
@@ -86,6 +105,7 @@ The interface (dates, CLI messages) is in English.
 - Hyprland or Niri (uses `wlr-layer-shell`; workspaces come from the compositor's IPC).
 - Rust 1.88 or later (2024 edition).
 - Optional: `pactl` for the mute icon and audio notices.
+- A D-Bus session bus for desktop notifications, with no other notification daemon running.
 - Vulkan drivers for your GPU (e.g. `vulkan-radeon`, `vulkan-intel`, `nvidia-utils`). The daemon uses Vulkan by
   default, which keeps memory low (~120 MB RSS instead of ~275 MB when GL/EGL loads every installed driver).
   Set `WGPU_BACKEND=gl` to override it.
@@ -225,6 +245,9 @@ hyprctl dispatch exec ~/.local/bin/hidebar daemon
 
 Note: a Hyprland `bind` takes priority over applications. With these bindings, `Ctrl+Shift+T`, `W`, `B` and `A` no
 longer reach your browser (reopen tab, close window, bookmarks bar, add-ons). If you use them, pick other keys.
+
+Desktop notifications need no binding, but remove any other notification daemon from your config (for example an
+`exec-once = dunst` or `mako` line) and stop it, so hidebar can take the name.
 
 Restart the daemon after updating the binary:
 

@@ -10,6 +10,63 @@ pub enum Event {
     System(System),
     Network(Network),
     Audio(Audio),
+    /// A desktop notification arrived, or replaces one with the same `id` (ADR-0007). Linux only.
+    #[cfg_attr(windows, allow(dead_code))]
+    Notification(Notification),
+    /// The app asked to close a notification (`CloseNotification`).
+    #[cfg_attr(windows, allow(dead_code))]
+    NotificationClosed(u32),
+}
+
+/// Desktop notification (org.freedesktop.Notifications), already in plain text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code))]
+pub struct Notification {
+    pub id: u32,
+    pub app: String,
+    pub summary: String,
+    pub body: String,
+    pub icon: Option<NotificationIcon>,
+    pub urgency: Urgency,
+    pub timeout: Timeout,
+    /// The app offered a `default` action: clicking the notification invokes it.
+    pub default_action: bool,
+    /// Other actions, as buttons: key and label.
+    pub actions: Vec<(String, String)>,
+    /// `value` hint: progress from 0 to 100.
+    pub progress: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code))]
+pub enum NotificationIcon {
+    /// Image file (PNG, JPEG or SVG).
+    Path(std::path::PathBuf),
+    /// Raw pixels, 8-bit RGBA, row after row.
+    Pixels {
+        width: u32,
+        height: u32,
+        rgba: std::sync::Arc<[u8]>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code))]
+pub enum Urgency {
+    Low,
+    Normal,
+    Critical,
+}
+
+/// `expire_timeout` as the app sent it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code))]
+pub enum Timeout {
+    /// −1: the server decides.
+    Default,
+    /// 0: until it is closed.
+    Never,
+    After(std::time::Duration),
 }
 
 /// Default audio output.

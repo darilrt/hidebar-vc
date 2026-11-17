@@ -6,12 +6,14 @@ mod hyprland;
 mod ipc;
 mod network;
 mod niri;
+mod notifications;
 mod session;
 mod system;
 
 use std::io;
 use std::process::ExitCode;
 use std::sync::Mutex;
+use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use iced::futures::channel::mpsc::UnboundedReceiver;
@@ -25,7 +27,7 @@ use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::{daemon, to_layer_message};
 
 use crate::command::Command;
-use crate::state::{ANIMATION_FRAME, CLOCK_TICK, FRAME, Hidebar, Input, Module, TICK};
+use crate::state::{ANIMATION_FRAME, CLOCK_TICK, Effect, FRAME, Hidebar, Input, Module, TICK};
 use crate::ui::{self, Message as UiMessage};
 use session::Compositor;
 
@@ -37,16 +39,24 @@ struct Shell {
     strip: Option<window::Id>,
     calendar_surface: Option<window::Id>,
     panel_surface: Option<window::Id>,
+    notification_surface: Option<window::Id>,
+    /// Size last given to the notification surface: it follows the stack of cards.
+    notification_size: (u32, u32),
+    /// Answers for the notification server (ADR-0007).
+    effects: Sender<Effect>,
 }
 
 impl Shell {
-    fn new(compositor: Compositor) -> Self {
+    fn new(compositor: Compositor, effects: Sender<Effect>) -> Self {
         Self {
             state: Hidebar::new(),
             compositor,
             strip: None,
             calendar_surface: None,
             panel_surface: None,
+            notification_surface: None,
+            notification_size: (0, 0),
+            effects,
         }
     }
 }
@@ -67,6 +77,7 @@ enum Message {
 fn run(
     inputs: UnboundedReceiver<Input>,
     compositor: Compositor,
+    effects: Sender<Effect>,
 ) -> Result<(), iced_layershell::Error> {
     let inputs = Mutex::new(Some(inputs));
     daemon(
@@ -75,7 +86,7 @@ fn run(
                 Some(receiver) => Task::run(receiver, Message::Input),
                 None => Task::none(),
             };
-            (Shell::new(compositor), task)
+            (Shell::new(compositor, effects.clone()), task)
         },
         || NAMESPACE.to_owned(),
         update,
@@ -103,6 +114,10 @@ fn run(
 
 fn update(shell: &mut Shell, message: Message) -> Task<Message> {
     let task = handle(shell, message);
+    for effect in shell.state.take_effects() {
+        // Without a server (name taken) nobody listens: the answer is dropped.
+        let _ = shell.effects.send(effect);
+    }
     Task::batch([task, sync(shell)])
 }
 
@@ -120,6 +135,13 @@ fn handle(shell: &mut Shell, message: Message) -> Task<Message> {
                 }
             }
             UiMessage::Disarm => shell.state.disarm(),
+            UiMessage::NotificationClick(id) => shell.state.click_notification(id),
+            UiMessage::NotificationDismiss(id) => shell.state.dismiss_notification(id),
+            UiMessage::NotificationAction(id, key) => shell.state.notification_action(id, &key),
+            UiMessage::NotificationHover(id, hovered) => {
+                shell.state.hover_notification(id, hovered, Instant::now());
+            }
+            UiMessage::NotificationsExpand => shell.state.expand_notifications(),
         },
         Message::Tick => shell.state.tick(Instant::now()),
         Message::Frame => shell.state.frame(Instant::now()),
@@ -131,9 +153,13 @@ fn handle(shell: &mut Shell, message: Message) -> Task<Message> {
         Message::Opened(id) if shell.panel_surface == Some(id) => {
             shell.state.panel_opened(Instant::now());
         }
+        Message::Opened(id) if shell.notification_surface == Some(id) => {
+            shell.state.notification_opened(Instant::now());
+        }
         Message::Closed(id) => {
             // If the compositor closed a surface, `sync` reopens it if it is still needed.
             shell.strip.take_if(|strip| *strip == id);
+            shell.notification_surface.take_if(|surface| *surface == id);
             if shell
                 .calendar_surface
                 .take_if(|surface| *surface == id)
@@ -192,6 +218,8 @@ fn view(shell: &Shell, id: window::Id) -> Element<'_, Message> {
         ui::view(&shell.state, ui::Surface::Calendar).map(Message::Ui)
     } else if shell.panel_surface == Some(id) {
         ui::view(&shell.state, ui::Surface::Panel).map(Message::Ui)
+    } else if shell.notification_surface == Some(id) {
+        ui::view(&shell.state, ui::Surface::Notification).map(Message::Ui)
     } else {
         space().into()
     }
@@ -211,7 +239,36 @@ fn sync(shell: &mut Shell) -> Task<Message> {
             shell.state.panel_wanted(),
             panel_settings,
         ),
+        notification_surface(shell),
     ])
+}
+
+/// Like `surface`, but its height follows the stack of cards: opened at the current size, resized when it changes.
+fn notification_surface(shell: &mut Shell) -> Task<Message> {
+    let size = ui::notifications_size(&shell.state);
+    match (
+        shell.state.notification_wanted(),
+        shell.notification_surface,
+    ) {
+        (true, None) => {
+            let id = window::Id::unique();
+            shell.notification_surface = Some(id);
+            shell.notification_size = size;
+            Task::done(Message::NewLayerShell {
+                settings: notification_settings(size),
+                id,
+            })
+        }
+        (true, Some(id)) if shell.notification_size != size => {
+            shell.notification_size = size;
+            Task::done(Message::SizeChange { id, size })
+        }
+        (false, Some(id)) => {
+            shell.notification_surface = None;
+            window::close(id)
+        }
+        _ => Task::none(),
+    }
 }
 
 fn surface(
@@ -246,10 +303,10 @@ fn subscription(shell: &Shell) -> Subscription<Message> {
     } else if shell.state.visible(Module::Clock) {
         subscriptions.push(iced::time::every(CLOCK_TICK).map(|_| Message::Tick));
     }
-    // Notice animation at 60 fps; otherwise the low-battery pulse at 20 fps.
+    // Animation at 60 fps; otherwise the low-battery pulse or a notification time bar at 20 fps.
     if shell.state.animating() {
         subscriptions.push(iced::time::every(ANIMATION_FRAME).map(|_| Message::Frame));
-    } else if shell.state.pulsing() {
+    } else if shell.state.pulsing() || shell.state.counting_down() {
         subscriptions.push(iced::time::every(FRAME).map(|_| Message::Frame));
     }
     if shell.calendar_surface.is_some() || shell.panel_surface.is_some() {
@@ -295,6 +352,23 @@ fn calendar_settings() -> NewLayerShellSettings {
         anchor: Anchor::Top,
         margin: Some((ui::STRIP_HEIGHT as i32 + ui::CALENDAR_GAP, 0, 0, 0)),
         keyboard_interactivity: KeyboardInteractivity::OnDemand,
+        events_transparent: false,
+        ..strip_settings()
+    }
+}
+
+/// Notification cards (ADR-0007): below the strip, aligned to the right like the panel. Receives the pointer
+/// only while there are cards; never the keyboard.
+fn notification_settings(size: (u32, u32)) -> NewLayerShellSettings {
+    NewLayerShellSettings {
+        size: Some(size),
+        anchor: Anchor::Top | Anchor::Right,
+        margin: Some((
+            ui::STRIP_HEIGHT as i32 + ui::CALENDAR_GAP,
+            ui::PANEL_SIDE,
+            0,
+            0,
+        )),
         events_transparent: false,
         ..strip_settings()
     }
@@ -359,8 +433,9 @@ pub(crate) fn run_daemon() -> ExitCode {
     system::listen(emitter());
     network::listen(emitter());
     audio::listen(emitter());
+    let effects = notifications::listen(emitter());
 
-    let result = run(receiver, compositor);
+    let result = run(receiver, compositor, effects);
     let _ = std::fs::remove_file(ipc::socket_path());
 
     match result {

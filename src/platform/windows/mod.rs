@@ -69,7 +69,8 @@ impl Interactive {
         match self.surface {
             ui::Surface::Calendar => state.calendar_wanted(),
             ui::Surface::Panel => state.panel_wanted(),
-            ui::Surface::Strip => false,
+            // No notification server on Windows (ADR-0007).
+            ui::Surface::Strip | ui::Surface::Notification => false,
         }
     }
 
@@ -446,6 +447,11 @@ fn apply_ui(state: &mut Hidebar, message: ui::Message) {
             }
         }
         ui::Message::Disarm => state.disarm(),
+        ui::Message::NotificationClick(_)
+        | ui::Message::NotificationDismiss(_)
+        | ui::Message::NotificationAction(..)
+        | ui::Message::NotificationHover(..)
+        | ui::Message::NotificationsExpand => {}
     }
 }
 

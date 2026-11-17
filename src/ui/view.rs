@@ -3,14 +3,21 @@
 use chrono::Datelike;
 use std::sync::LazyLock;
 
-use iced::widget::{Column, Row, button, column, container, mouse_area, row, space, svg, text};
-use iced::{Alignment, Border, Color, Element, Length, Padding};
+use iced::widget::{
+    Column, Row, button, column, container, image, mouse_area, row, space, svg, text,
+};
+use iced::{Alignment, Border, Color, Element, Font, Length, Padding, font};
 
 use super::stretch::Stretch;
 use super::{Message, Surface};
 use crate::calendar::{self, WEEKDAYS_SHORT};
-use crate::event::{Audio, Battery, BatteryStatus, Network, System, Workspaces};
-use crate::state::{Action, Frame, Hidebar, Module, Notice, NoticeFrame, Severity, severity};
+use crate::event::{
+    Audio, Battery, BatteryStatus, Network, Notification, NotificationIcon, System, Urgency,
+    Workspaces,
+};
+use crate::state::{
+    Action, CardView, Frame, Hidebar, Module, Notice, NoticeFrame, Severity, severity,
+};
 
 /// Height of the strip surface, in logical pixels.
 pub(crate) const STRIP_HEIGHT: u32 = 34;
@@ -50,6 +57,12 @@ static ICON_POWER: LazyLock<svg::Handle> =
     LazyLock::new(|| icon(include_bytes!("../../assets/icons/power.svg")));
 static ICON_LOGOUT: LazyLock<svg::Handle> =
     LazyLock::new(|| icon(include_bytes!("../../assets/icons/logout.svg")));
+static ICON_BELL: LazyLock<svg::Handle> =
+    LazyLock::new(|| icon(include_bytes!("../../assets/icons/bell.svg")));
+static ICON_CLOSE: LazyLock<svg::Handle> =
+    LazyLock::new(|| icon(include_bytes!("../../assets/icons/close.svg")));
+static ICON_CHEVRON: LazyLock<svg::Handle> =
+    LazyLock::new(|| icon(include_bytes!("../../assets/icons/chevron-down.svg")));
 
 fn icon(bytes: &'static [u8]) -> svg::Handle {
     svg::Handle::from_memory(bytes)
@@ -75,6 +88,37 @@ const INFO_ROWS: f32 = 3.0;
 const INFO_GAP: f32 = 10.0;
 const ACTION_BUTTON: f32 = 44.0;
 const ACTION_ICON: f32 = 18.0;
+/// Notification cards (ADR-0007, the user's design): width, padding (left a bit wider), header, text lines,
+/// image, action buttons, gap between cards and the "N more" pill. Heights are computed from the content, not
+/// measured, so the surface can take the stack's height up front.
+#[cfg_attr(windows, allow(dead_code))]
+const CARD_WIDTH: f32 = 320.0;
+const CARD_PADDING: Padding = Padding {
+    top: 12.0,
+    right: 12.0,
+    bottom: 12.0,
+    left: 14.0,
+};
+const CARD_GAP: f32 = 6.0;
+const CARD_HEADER: f32 = 20.0;
+const CARD_BADGE: f32 = 20.0;
+const CARD_LINE: f32 = 18.0;
+const CARD_BODY_GAP: f32 = 4.0;
+const CARD_BODY_LINES: usize = 2;
+const CARD_IMAGE: f32 = 44.0;
+const CARD_BUTTON: f32 = 32.0;
+const CARD_METER: f32 = 4.0;
+const CARD_CAPTION: f32 = 15.0;
+const CARD_RADIUS: f32 = 14.0;
+const STACK_GAP: f32 = 8.0;
+const MORE_HEIGHT: f32 = 36.0;
+/// Characters per body line (12.5 px), with and without the image beside the text; title characters.
+const BODY_LINE_CHARS: usize = 45;
+const BODY_LINE_CHARS_IMAGE: usize = 37;
+const TITLE_CHARS: usize = 40;
+const CARD_DIM: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.6);
+const CARD_TEXT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.8);
+
 /// Gap between the panel and the right screen edge: aligned with the `status` pill.
 pub(crate) const PANEL_SIDE: i32 = PILL_SIDE as i32;
 
@@ -83,7 +127,493 @@ pub(crate) fn view(state: &Hidebar, surface: Surface) -> Element<'_, Message> {
         Surface::Strip => strip_view(state),
         Surface::Calendar => calendar_view(state),
         Surface::Panel => panel_view(state),
+        Surface::Notification => notifications_view(state),
     }
+}
+
+/// Size of the notification surface: the full height of every card on screen (leaving ones too) and the pill.
+#[cfg(target_os = "linux")]
+pub(crate) fn notifications_size(state: &Hidebar) -> (u32, u32) {
+    let cards = state.notification_cards();
+    let mut height: f32 = cards
+        .iter()
+        .map(|card| card_height(card.notification))
+        .sum::<f32>()
+        + STACK_GAP * cards.len().saturating_sub(1) as f32;
+    if state.notifications.hidden() > 0 {
+        height += STACK_GAP + MORE_HEIGHT;
+    }
+    (CARD_WIDTH as u32, height.ceil().max(1.0) as u32)
+}
+
+/// Height of a card from its content: header, title and body (or progress), and action buttons.
+fn card_height(notification: &Notification) -> f32 {
+    let mut height = CARD_PADDING.top + CARD_PADDING.bottom + CARD_HEADER + CARD_GAP;
+    if notification.progress.is_some() {
+        height += CARD_LINE + CARD_GAP + CARD_METER;
+        if !notification.body.is_empty() {
+            height += CARD_GAP + CARD_CAPTION;
+        }
+    } else {
+        let lines = body_lines(notification);
+        let text = CARD_LINE
+            + if lines > 0 {
+                CARD_BODY_GAP + CARD_LINE * lines as f32
+            } else {
+                0.0
+            };
+        height += if notification.icon.is_some() {
+            text.max(CARD_IMAGE)
+        } else {
+            text
+        };
+    }
+    if !notification.actions.is_empty() {
+        height += CARD_GAP + 4.0 + CARD_BUTTON;
+    }
+    height
+}
+
+fn body_chars(notification: &Notification) -> usize {
+    if notification.icon.is_some() {
+        BODY_LINE_CHARS_IMAGE
+    } else {
+        BODY_LINE_CHARS
+    }
+}
+
+/// Estimated body lines, at most `CARD_BODY_LINES`.
+fn body_lines(notification: &Notification) -> usize {
+    let characters = notification.body.chars().count();
+    characters
+        .div_ceil(body_chars(notification))
+        .min(CARD_BODY_LINES)
+}
+
+/// The stack of cards, top to bottom, and the "N more" pill when some are waiting.
+fn notifications_view(state: &Hidebar) -> Element<'static, Message> {
+    let mut stack = Column::new().spacing(STACK_GAP).width(Length::Fill);
+    for card in state.notification_cards() {
+        let height = card_height(card.notification);
+        stack = stack.push(if card.frame.reveal == 0.0 {
+            // Stretching down or folding back: just the background, like the panels.
+            let style = panel_style(card.frame);
+            container(space())
+                .width(Length::Fill)
+                .height((height * card.frame.size).max(2.0 * CARD_RADIUS))
+                .style(move |theme| {
+                    let mut style = style(theme);
+                    style.border = style.border.rounded(CARD_RADIUS);
+                    style
+                })
+                .into()
+        } else {
+            notification_card(&card, height)
+        });
+    }
+    let hidden = state.notifications.hidden();
+    if hidden > 0 {
+        stack = stack.push(more_pill(hidden));
+    }
+    container(stack).align_top(Length::Fill).into()
+}
+
+fn notification_card(card: &CardView<'_>, height: f32) -> Element<'static, Message> {
+    let notification = card.notification;
+    let id = notification.id;
+    let alpha = card.frame.reveal;
+    let critical = notification.urgency == Urgency::Critical;
+
+    let close: Element<'static, Message> = if card.hovered {
+        button(
+            svg(ICON_CLOSE.clone())
+                .width(14)
+                .height(14)
+                .opacity(alpha)
+                .style(|_, _| svg::Style {
+                    color: Some(Color::WHITE),
+                }),
+        )
+        .on_press(Message::NotificationDismiss(id))
+        .padding(5)
+        .width(CARD_HEADER + 4.0)
+        .height(CARD_HEADER + 4.0)
+        .style(flat_button)
+        .into()
+    } else {
+        space().width(CARD_HEADER + 4.0).into()
+    };
+    let header = row![
+        badge(critical, alpha),
+        text(format!("{} · {}", notification.app, age(card.age)))
+            .size(11)
+            .color(fade(CARD_DIM, alpha))
+            .wrapping(text::Wrapping::None)
+            .width(Length::Fill),
+        close,
+    ]
+    .spacing(8)
+    .height(CARD_HEADER)
+    .align_y(Alignment::Center);
+
+    let title_color = if critical {
+        WARNING_COLOR
+    } else {
+        Color::WHITE
+    };
+    let title = |limit| {
+        text(shorten(&notification.summary, limit))
+            .size(13)
+            .font(Font {
+                weight: font::Weight::Medium,
+                ..Font::DEFAULT
+            })
+            .color(fade(title_color, alpha))
+            .wrapping(text::Wrapping::None)
+            .height(CARD_LINE)
+    };
+
+    let mut content = Column::new().spacing(CARD_GAP).push(header);
+    if let Some(progress) = notification.progress {
+        content = content
+            .push(
+                row![
+                    title(TITLE_CHARS - 6).width(Length::Fill),
+                    text(format!("{progress} %"))
+                        .size(12)
+                        .color(fade(CARD_TEXT, alpha)),
+                ]
+                .align_y(Alignment::Center),
+            )
+            .push(progress_bar(progress, alpha));
+        if !notification.body.is_empty() {
+            content = content.push(
+                text(shorten(&notification.body, BODY_LINE_CHARS))
+                    .size(11)
+                    .color(fade(CARD_DIM, alpha))
+                    .wrapping(text::Wrapping::None)
+                    .height(CARD_CAPTION),
+            );
+        }
+    } else {
+        let mut words = Column::new()
+            .spacing(CARD_BODY_GAP)
+            .width(Length::Fill)
+            .push(title(TITLE_CHARS));
+        if !notification.body.is_empty() {
+            let limit = body_chars(notification) * CARD_BODY_LINES - 3;
+            words = words.push(
+                text(shorten(&notification.body, limit))
+                    .size(12.5)
+                    .line_height(text::LineHeight::Absolute(CARD_LINE.into()))
+                    .color(fade(CARD_TEXT, alpha)),
+            );
+        }
+        let mut line = Row::new().spacing(10).push(words);
+        if let Some(picture) = notification_image(notification, alpha) {
+            line = line.push(picture);
+        }
+        content = content.push(line);
+    }
+    if !notification.actions.is_empty() {
+        let buttons = notification
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(index, (key, label))| {
+                action_chip(id, key, label, critical && index == 0, alpha)
+            });
+        content = content.push(
+            Row::with_children(buttons)
+                .spacing(6)
+                .padding(Padding::ZERO.top(4.0)),
+        );
+    }
+
+    let border = if critical {
+        Border::default()
+            .rounded(CARD_RADIUS)
+            .color(fade(Color::from_rgba(1.0, 0.65, 0.25, 0.45), alpha))
+            .width(1.0)
+    } else {
+        Border::default().rounded(CARD_RADIUS)
+    };
+    let background = fade(CALENDAR_BACKGROUND, card.frame.background);
+    let body = container(content)
+        .padding(CARD_PADDING)
+        .width(Length::Fill)
+        .height(height)
+        .clip(true)
+        .style(move |_| container::Style {
+            background: Some(background.into()),
+            border,
+            ..Default::default()
+        });
+
+    // Time left: a thin line along the bottom edge (inside the rounded corners) that empties until it expires.
+    let card: Element<'static, Message> = match card.left {
+        Some(left) => iced::widget::stack![
+            body,
+            container(time_bar(left, alpha))
+                .padding(Padding::ZERO.left(CARD_RADIUS).right(CARD_RADIUS))
+                .align_bottom(height)
+                .width(Length::Fill),
+        ]
+        .into(),
+        None => body.into(),
+    };
+    mouse_area(card)
+        .on_press(Message::NotificationClick(id))
+        .on_enter(Message::NotificationHover(id, true))
+        .on_exit(Message::NotificationHover(id, false))
+        .into()
+}
+
+/// 20 px rounded square with a bell; orange on critical cards.
+fn badge(critical: bool, alpha: f32) -> Element<'static, Message> {
+    let (background, color) = if critical {
+        (Color::from_rgba(1.0, 0.65, 0.25, 0.2), WARNING_COLOR)
+    } else {
+        (Color::from_rgba(1.0, 1.0, 1.0, 0.14), Color::WHITE)
+    };
+    container(
+        svg(ICON_BELL.clone())
+            .width(12)
+            .height(12)
+            .opacity(alpha)
+            .style(move |_, _| svg::Style { color: Some(color) }),
+    )
+    .center(CARD_BADGE)
+    .style(move |_| container::Style {
+        background: Some(fade(background, alpha).into()),
+        border: Border::default().rounded(6.0),
+        ..Default::default()
+    })
+    .into()
+}
+
+/// "now", "5 min ago", "2 h ago".
+fn age(age: std::time::Duration) -> String {
+    let minutes = age.as_secs() / 60;
+    match minutes {
+        0 => "now".to_owned(),
+        1..60 => format!("{minutes} min ago"),
+        _ => format!("{} h ago", minutes / 60),
+    }
+}
+
+/// The app's image, 44 px with rounded corners, beside the text; none when it sent only a theme name.
+fn notification_image(
+    notification: &Notification,
+    alpha: f32,
+) -> Option<Element<'static, Message>> {
+    let picture: Element<'static, Message> = match notification.icon.as_ref()? {
+        NotificationIcon::Path(path)
+            if path.extension().is_some_and(|extension| extension == "svg") =>
+        {
+            svg(svg::Handle::from_path(path))
+                .width(CARD_IMAGE)
+                .height(CARD_IMAGE)
+                .opacity(alpha)
+                .into()
+        }
+        NotificationIcon::Path(path) => image(image::Handle::from_path(path))
+            .width(CARD_IMAGE)
+            .height(CARD_IMAGE)
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(8.0)
+            .opacity(alpha)
+            .into(),
+        NotificationIcon::Pixels {
+            width,
+            height,
+            rgba,
+        } => image(pixels_handle(*width, *height, rgba))
+            .width(CARD_IMAGE)
+            .height(CARD_IMAGE)
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(8.0)
+            .opacity(alpha)
+            .into(),
+    };
+    Some(picture)
+}
+
+fn progress_bar(percent: u8, alpha: f32) -> Element<'static, Message> {
+    let percent = percent.min(100);
+    let filled = container(space())
+        .width(Length::FillPortion(u16::from(percent)))
+        .height(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(fade(Color::WHITE, alpha).into()),
+            ..Default::default()
+        });
+    container(row![
+        filled,
+        space().width(Length::FillPortion(u16::from(100 - percent)))
+    ])
+    .width(Length::Fill)
+    .height(CARD_METER)
+    .clip(true)
+    .style(move |_| container::Style {
+        background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.14 * alpha).into()),
+        border: Border::default().rounded(CARD_METER / 2.0),
+        ..Default::default()
+    })
+    .into()
+}
+
+fn time_bar(left: f32, alpha: f32) -> Element<'static, Message> {
+    let left = (left * 1000.0).round() as u16;
+    row![
+        container(space())
+            .width(Length::FillPortion(left))
+            .height(2)
+            .style(move |_| container::Style {
+                background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.45 * alpha).into()),
+                ..Default::default()
+            }),
+        space().width(Length::FillPortion(1000 - left)),
+    ]
+    .into()
+}
+
+/// Action button; the first one of a critical card in orange.
+fn action_chip(
+    id: u32,
+    key: &str,
+    label: &str,
+    warn: bool,
+    alpha: f32,
+) -> Element<'static, Message> {
+    let (base, color) = if warn {
+        (Color::from_rgba(1.0, 0.65, 0.25, 0.18), WARNING_COLOR)
+    } else {
+        (Color::from_rgba(1.0, 1.0, 1.0, 0.1), Color::WHITE)
+    };
+    button(
+        text(shorten(label, 20))
+            .size(12)
+            .color(fade(color, alpha))
+            .wrapping(text::Wrapping::None)
+            .center()
+            .width(Length::Fill),
+    )
+    .on_press(Message::NotificationAction(id, key.to_owned()))
+    .width(Length::Fill)
+    .height(CARD_BUTTON)
+    .style(move |_, status| {
+        let hover = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let background = if hover {
+            Color {
+                a: base.a + 0.1,
+                ..base
+            }
+        } else {
+            base
+        };
+        button::Style {
+            background: Some(fade(background, alpha).into()),
+            text_color: color,
+            border: Border::default().rounded(8.0),
+            ..Default::default()
+        }
+    })
+    .into()
+}
+
+/// "N more notifications": two stacked squares, the text and a chevron. Clicking shows them.
+fn more_pill(hidden: usize) -> Element<'static, Message> {
+    let square = |alpha: f32| {
+        container(space())
+            .width(16)
+            .height(16)
+            .style(move |_| container::Style {
+                background: Some(Color::from_rgba(1.0, 1.0, 1.0, alpha).into()),
+                border: Border::default()
+                    .rounded(5.0)
+                    .color(Color::from_rgba(0.0, 0.0, 0.0, 0.8))
+                    .width(2.0),
+                ..Default::default()
+            })
+    };
+    // Two cards, the second 10 px further right and behind.
+    let squares = iced::widget::stack![
+        container(square(0.14)).padding(Padding::ZERO.left(10.0)),
+        square(0.22),
+    ]
+    .width(26);
+    let label = if hidden == 1 {
+        "1 more notification".to_owned()
+    } else {
+        format!("{hidden} more notifications")
+    };
+    button(
+        row![
+            squares,
+            text(label)
+                .size(12)
+                .color(Color::from_rgba(1.0, 1.0, 1.0, 0.75))
+                .width(Length::Fill),
+            svg(ICON_CHEVRON.clone())
+                .width(14)
+                .height(14)
+                .style(|_, _| svg::Style {
+                    color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.75)),
+                }),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::NotificationsExpand)
+    .padding(Padding::ZERO.left(14.0).right(14.0))
+    .width(Length::Fill)
+    .height(MORE_HEIGHT)
+    .style(|_, status| {
+        let hover = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(
+                Color::from_rgba(0.0, 0.0, 0.0, if hover { 0.75 } else { 0.6 }).into(),
+            ),
+            border: Border::default().rounded(12.0),
+            ..Default::default()
+        }
+    })
+    .into()
+}
+
+/// The view is rebuilt every frame: the handle of the same pixels is kept so they are uploaded once.
+fn pixels_handle(width: u32, height: u32, rgba: &std::sync::Arc<[u8]>) -> image::Handle {
+    thread_local! {
+        static LAST: std::cell::RefCell<Vec<(std::sync::Arc<[u8]>, image::Handle)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    LAST.with_borrow_mut(|cache| {
+        if let Some((_, handle)) = cache
+            .iter()
+            .find(|(pixels, _)| std::sync::Arc::ptr_eq(pixels, rgba))
+        {
+            return handle.clone();
+        }
+        let handle = image::Handle::from_rgba(width, height, rgba.to_vec());
+        // One per card that can be on screen.
+        if cache.len() >= 6 {
+            cache.remove(0);
+        }
+        cache.push((rgba.clone(), handle.clone()));
+        handle
+    })
+}
+
+/// At most `limit` characters, with an ellipsis when cut.
+fn shorten(text: &str, limit: usize) -> String {
+    let mut characters = text.chars();
+    let mut short: String = characters.by_ref().take(limit).collect();
+    if characters.next().is_some() {
+        short = short.trim_end().to_owned();
+        short.push('…');
+    }
+    short
 }
 
 /// Meters, information rows, separator and action buttons.
@@ -197,6 +727,20 @@ fn status_view(state: &Hidebar, alpha: f32) -> Element<'static, Message> {
     let mut line = Row::new().spacing(12).align_y(Alignment::Center);
     if let Some(network) = state.network {
         line = line.push(network_view(network, alpha));
+    }
+    // Open desktop notifications (ADR-0007).
+    let count = state.notifications.count();
+    if count > 0 {
+        line = line.push(
+            row![
+                faded(&ICON_BELL, Color::WHITE, alpha),
+                text(count.to_string())
+                    .size(12)
+                    .color(fade(Color::WHITE, alpha)),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        );
     }
     if let Some(System { cpu, ram }) = state.system {
         line = line

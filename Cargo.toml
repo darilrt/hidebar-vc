@@ -17,10 +17,12 @@ iced = { version = "0.14.0", default-features = false, features = [
     "wayland",
     "svg",
     "advanced",
+    "image",
 ] }
 iced_layershell = "0.19.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+zbus = "5"
 
 [target.'cfg(windows)'.dependencies]
 iced = { version = "0.14.0", default-features = false, features = [
@@ -30,6 +32,7 @@ iced = { version = "0.14.0", default-features = false, features = [
     "thread-pool",
     "svg",
     "advanced",
+    "image",
 ] }
 iced_runtime = "0.14.0"
 iced_tiny_skia = { version = "0.14.1", default-features = false, features = ["svg"] }

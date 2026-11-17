@@ -12,6 +12,9 @@ use crate::calendar;
 use crate::command::{Command, Target};
 use crate::event::{Audio, Battery, Event, Network, System, Workspaces};
 
+mod notifications;
+pub(crate) use notifications::{CardView, CloseReason, Effect, Notifications};
+
 /// How long each module stays visible in momentary mode; asking again restarts it.
 const WORKSPACES_DURATION: Duration = Duration::from_millis(1500);
 const CLOCK_DURATION: Duration = Duration::from_secs(3);
@@ -265,6 +268,8 @@ pub(crate) struct Hidebar {
     closing_month: Option<NaiveDate>,
     /// Animation of the status panel, like the calendar's.
     panel_motion: Option<Motion>,
+    /// Desktop notifications (ADR-0007).
+    pub(crate) notifications: Notifications,
     /// Last known data; `None` until each source's first event.
     pub(crate) workspaces: Option<Workspaces>,
     pub(crate) battery: Option<Battery>,
@@ -296,6 +301,7 @@ impl Hidebar {
             calendar_motion: None,
             closing_month: None,
             panel_motion: None,
+            notifications: Notifications::default(),
             workspaces: None,
             battery: None,
             system: None,
@@ -502,6 +508,70 @@ impl Hidebar {
         for notice in &mut self.notices {
             notice.take_if(|until| *until <= instant);
         }
+        self.notifications.expire(instant);
+    }
+
+    /// Click on notification `id`: its `default` action, if any, and closes it.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn click_notification(&mut self, id: u32) {
+        self.notifications.click(id);
+        self.settle();
+    }
+
+    /// Action button `key` of notification `id`, and closes it.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn notification_action(&mut self, id: u32, key: &str) {
+        self.notifications.act(id, key);
+        self.settle();
+    }
+
+    /// The X of notification `id`: closes it without any action.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn dismiss_notification(&mut self, id: u32) {
+        self.notifications.close(id, CloseReason::Dismissed);
+        self.settle();
+    }
+
+    /// The cursor over a card pauses its time.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn hover_notification(&mut self, id: u32, hovered: bool, instant: Instant) {
+        self.notifications.hover(id, hovered, instant);
+    }
+
+    /// The "N more" pill: shows the waiting ones too.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn expand_notifications(&mut self) {
+        self.notifications.expand();
+        self.settle();
+    }
+
+    /// Answers for the sources since the last call.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn take_effects(&mut self) -> Vec<Effect> {
+        self.notifications.take_effects()
+    }
+
+    /// Notification cards on screen, as they look at the current frame.
+    pub(crate) fn notification_cards(&self) -> Vec<CardView<'_>> {
+        self.notifications.cards(self.frame)
+    }
+
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn notification_wanted(&self) -> bool {
+        self.notifications.wanted()
+    }
+
+    /// A card's time bar is running: the shell sends `FRAME` frames.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub(crate) fn counting_down(&self) -> bool {
+        self.notifications.momentary()
+    }
+
+    /// The notification surface has just appeared (Linux): entrances start over from `instant`.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn notification_opened(&mut self, instant: Instant) {
+        self.notifications.opened(instant);
+        self.frame = instant;
     }
 
     /// Shows a notice briefly (or restarts its timer if already shown). With `status` visible the change is
@@ -529,6 +599,7 @@ impl Hidebar {
             instant,
             instant,
         );
+        self.notifications.animate(instant);
         for module in MODULES {
             let wanted = self.visible(module);
             Motion::follow(
@@ -650,6 +721,7 @@ impl Hidebar {
             .chain([&self.calendar_motion, &self.panel_motion])
             .flatten()
             .any(|motion| motion.leaving || !motion.done(self.frame))
+            || self.notifications.animating(self.frame)
     }
 
     /// Notices that should be on screen, in order. None while `status` is visible: the full pill already
@@ -716,6 +788,7 @@ impl Hidebar {
             .iter()
             .any(|visibility| matches!(visibility, Visibility::Until(_)))
             || self.notices.iter().any(Option::is_some)
+            || self.notifications.momentary()
             || self
                 .panel
                 .as_ref()
@@ -804,6 +877,10 @@ impl Hidebar {
                     self.notify(Notice::Audio);
                 }
             }
+            Event::Notification(notification) => {
+                self.notifications.receive(notification, Instant::now());
+            }
+            Event::NotificationClosed(id) => self.notifications.close(id, CloseReason::Closed),
         }
     }
 }
